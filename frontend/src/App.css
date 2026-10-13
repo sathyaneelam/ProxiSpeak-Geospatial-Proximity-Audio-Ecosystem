@@ -350,3 +350,37 @@
     flex-wrap: wrap;
   }
 }
+
+/* Day 3: avatar customization sidebar */
+.profile-panel {
+  border: 1px solid #2b4059;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #11263b, #101a2d);
+  padding: 16px 12px;
+  margin-top: 22px;
+}
+.profile-title, .profile-color-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  color: #8daac9;
+  letter-spacing: 1.3px;
+  margin-bottom: 13px;
+}
+.profile-preview { display: flex; align-items: center; gap: 11px; margin-bottom: 18px; }
+.profile-preview strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.profile-preview small { display: block; color: #94a9c1; font-size: 11px; margin-top: 4px; }
+.profile-orb { display: block; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%; border: 2px solid #ffffff77; }
+.profile-name-form label { display: block; margin-bottom: 8px; color: #afc9dd; font-size: 12px; }
+.profile-name-row { display: flex; gap: 5px; margin-bottom: 20px; }
+.profile-name-row input { background: #091829; border: 1px solid #36516a; color: #f5fbff; border-radius: 8px; padding: 9px 8px; width: 100%; min-width: 0; font-size: 12px; }
+.profile-name-row input:focus { outline: 2px solid #22d3ee77; outline-offset: 1px; }
+.profile-name-row button { cursor: pointer; border: none; background: #16b6cd; color: #07202b; border-radius: 8px; font-weight: 800; padding: 0 9px; font-size: 12px; }
+.profile-colors { display: flex; gap: 8px; flex-wrap: wrap; }
+.profile-color { width: 25px; height: 25px; border: 2px solid #19283c; border-radius: 50%; cursor: pointer; }
+.profile-color.selected { outline: 2px solid white; outline-offset: 2px; }
+.profile-color:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.profile-note { color: #809bb5; font-size: 10px; line-height: 1.5; margin: 16px 0 0; }
+@media (max-width: 650px) {
+  .profile-panel { margin-top: 4px; }
+}

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { io } from 'socket.io-client'
 
 const SERVER_URL =
-  import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'
+  import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000'
 
 export function useSocket() {
   const socketRef = useRef(null)
@@ -14,7 +14,8 @@ export function useSocket() {
     const socket = io(SERVER_URL, {
       autoConnect: true,
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
     })
 
     socketRef.current = socket
@@ -22,44 +23,77 @@ export function useSocket() {
     const handleConnect = () => {
       setIsConnected(true)
       setConnectionError(null)
-      console.log('Connected to ProxiSpeak backend')
+      console.log('Connected to ProxiSpeak backend:', socket.id)
     }
 
-    const handleDisconnect = () => {
+    const handleDisconnect = (reason) => {
       setIsConnected(false)
+      setConnectionError(`Disconnected: ${reason}`)
     }
 
-    const handleError = (error) => {
+    const handleConnectError = (error) => {
       setIsConnected(false)
       setConnectionError(error.message)
     }
 
+    const handleServerError = (error) => {
+      setConnectionError(error?.message || 'Unknown server error')
+    }
+
     socket.on('connect', handleConnect)
     socket.on('disconnect', handleDisconnect)
-    socket.on('connect_error', handleError)
+    socket.on('connect_error', handleConnectError)
+    socket.on('error', handleServerError)
+
+    const heartbeatInterval = setInterval(() => {
+      if (socket.connected) {
+        socket.emit('avatar:heartbeat')
+      }
+    }, 20000)
 
     return () => {
+      clearInterval(heartbeatInterval)
       socket.removeAllListeners()
       socket.disconnect()
-      socketRef.current = null
+
+      if (socketRef.current === socket) {
+        socketRef.current = null
+      }
     }
   }, [])
 
-  const joinOffice = useCallback((officeId) => {
-    if (!socketRef.current?.connected) return false
+  // Supports username customization and existing avatar position.
+  const joinOffice = useCallback(
+    (officeId, x = 500, y = 300, displayName = 'Guest') => {
+      const socket = socketRef.current
+      if (!socket?.connected) return false
 
-    socketRef.current.emit('join-office', { officeId })
+      socket.emit('office:join', {
+        officeId,
+        x,
+        y,
+        displayName: String(displayName).trim().slice(0, 24) || 'Guest',
+        earshotRadius: 100,
+      })
+
+      return true
+    },
+    []
+  )
+
+  const moveAvatar = useCallback((officeId, x, y) => {
+    const socket = socketRef.current
+    if (!socket?.connected) return false
+
+    socket.emit('avatar:move', { officeId, x, y })
     return true
   }, [])
 
-  const moveAvatar = useCallback((officeId, x, y) => {
-    if (!socketRef.current?.connected) return false
+  const leaveOffice = useCallback(() => {
+    const socket = socketRef.current
+    if (!socket?.connected) return false
 
-    socketRef.current.emit('move-avatar', {
-      officeId,
-      x,
-      y,
-    })
+    socket.emit('office:leave')
     return true
   }, [])
 
@@ -69,5 +103,6 @@ export function useSocket() {
     connectionError,
     joinOffice,
     moveAvatar,
+    leaveOffice,
   }
 }

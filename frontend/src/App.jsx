@@ -8,6 +8,19 @@ const SPEED = 220
 const RADIUS = 100
 const PLAYER_RADIUS = 18
 const OFFICE_ID = 'office-01'
+const AVATAR_COLORS = ['#22d3ee', '#a78bfa', '#fb7185', '#34d399', '#fbbf24', '#60a5fa']
+
+function readProfile() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('proxispeak-avatar-profile') || '{}')
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name.slice(0, 20) : 'Guest',
+      color: AVATAR_COLORS.includes(parsed.color) ? parsed.color : AVATAR_COLORS[0],
+    }
+  } catch {
+    return { name: 'Guest', color: AVATAR_COLORS[0] }
+  }
+}
 
 const roomZones = [
   {
@@ -128,66 +141,125 @@ function App() {
   const remotePlayersRef = useRef(new Map())
   const lastSyncTimeRef = useRef(0)
 
+  const [profile, setProfile] = useState(readProfile)
+  const [draftName, setDraftName] = useState(() => readProfile().name)
+  const profileRef = useRef(profile)
+  profileRef.current = profile
   const [position, setPosition] = useState({ x: 500, y: 300 })
 
+  function saveName(event) {
+    event.preventDefault()
+    const cleanName = draftName.trim().slice(0, 20) || 'Guest'
+    setDraftName(cleanName)
+    setProfile((previous) => ({ ...previous, name: cleanName }))
+  }
+
+  function selectColor(color) {
+    setProfile((previous) => ({ ...previous, color }))
+  }
+
   useEffect(() => {
-    if (!isConnected || !socketRef.current) return
+    localStorage.setItem('proxispeak-avatar-profile', JSON.stringify(profile))
+  }, [profile])
+  const [remoteRevision, setRemoteRevision] = useState(0)
+  const [joinedOffice, setJoinedOffice] = useState(false)
+  const [nearbyPeerIds, setNearbyPeerIds] = useState(() => new Set())
 
+  // Keep live multiplayer presence separate from the static demo colleagues.
+  useEffect(() => {
     const socket = socketRef.current
-
-    const handleOfficeState = ({ players = [] }) => {
+    if (!isConnected || !socket) {
       remotePlayersRef.current.clear()
+      setRemoteRevision((version) => version + 1)
+      setNearbyPeerIds(new Set())
+      setJoinedOffice(false)
+      return
+    }
 
-      players.forEach((player) => {
-        if (player.userId !== socket.id) {
-          remotePlayersRef.current.set(player.userId, player)
+    const isOtherPlayer = (player) =>
+      Boolean(player?.socketId && player.socketId !== socket.id)
+
+    const handleOfficeJoined = (payload = {}) => {
+      if (payload.status !== 'success' || payload.officeId !== OFFICE_ID) {
+        console.warn('Office join was not successful:', payload)
+        setJoinedOffice(false)
+        return
+      }
+
+      remotePlayersRef.current.clear()
+      for (const peer of payload.peers || []) {
+        if (isOtherPlayer(peer)) {
+          remotePlayersRef.current.set(peer.socketId, peer)
         }
+      }
+      setRemoteRevision((version) => version + 1)
+      setJoinedOffice(true)
+      console.log('Joined office:', payload.officeId, 'peers:', payload.peers?.length ?? 0)
+    }
+
+    const handleUserJoined = (peer) => {
+      if (!isOtherPlayer(peer)) return
+      remotePlayersRef.current.set(peer.socketId, peer)
+      setRemoteRevision((version) => version + 1)
+    }
+
+    const handleAvatarMoved = (peer) => {
+      if (!isOtherPlayer(peer)) return
+      const previous = remotePlayersRef.current.get(peer.socketId)
+      if (!previous) return // Initial presence comes from office:joined / user:joined.
+      remotePlayersRef.current.set(peer.socketId, { ...previous, ...peer })
+      setRemoteRevision((version) => version + 1)
+    }
+
+    const handleUserLeft = ({ socketId } = {}) => {
+      if (!socketId) return
+      remotePlayersRef.current.delete(socketId)
+      setNearbyPeerIds((previous) => {
+        const next = new Set(previous)
+        next.delete(socketId)
+        return next
       })
-
-      console.log('Existing players:', players.length)
+      setRemoteRevision((version) => version + 1)
     }
 
-    const handleUserJoined = (player) => {
-      if (player.userId === socket.id) return
-      remotePlayersRef.current.set(player.userId, player)
-      console.log('Player joined:', player.userId)
+    const handleProximityEnter = ({ peerSocketId } = {}) => {
+      if (!peerSocketId) return
+      setNearbyPeerIds((previous) => new Set(previous).add(peerSocketId))
     }
 
-    const handleAvatarMoved = (player) => {
-      if (player.userId === socket.id) return
-
-      const existing = remotePlayersRef.current.get(player.userId)
-
-      remotePlayersRef.current.set(player.userId, {
-        ...(existing || {}),
-        ...player,
+    const handleProximityLeave = ({ peerSocketId } = {}) => {
+      if (!peerSocketId) return
+      setNearbyPeerIds((previous) => {
+        const next = new Set(previous)
+        next.delete(peerSocketId)
+        return next
       })
     }
 
-    const handleUserLeft = ({ userId }) => {
-      remotePlayersRef.current.delete(userId)
-      console.log('Player left:', userId)
-    }
-
-    socket.on('office-state', handleOfficeState)
-    socket.on('user-joined', handleUserJoined)
-    socket.on('avatar-moved', handleAvatarMoved)
-    socket.on('user-left', handleUserLeft)
+    socket.on('office:joined', handleOfficeJoined)
+    socket.on('user:joined', handleUserJoined)
+    socket.on('avatar:moved', handleAvatarMoved)
+    socket.on('user:left', handleUserLeft)
+    socket.on('proximity:enter', handleProximityEnter)
+    socket.on('proximity:leave', handleProximityLeave)
 
     return () => {
-      socket.off('office-state', handleOfficeState)
-      socket.off('user-joined', handleUserJoined)
-      socket.off('avatar-moved', handleAvatarMoved)
-      socket.off('user-left', handleUserLeft)
+      socket.off('office:joined', handleOfficeJoined)
+      socket.off('user:joined', handleUserJoined)
+      socket.off('avatar:moved', handleAvatarMoved)
+      socket.off('user:left', handleUserLeft)
+      socket.off('proximity:enter', handleProximityEnter)
+      socket.off('proximity:leave', handleProximityLeave)
     }
   }, [isConnected, socketRef])
 
+  // Listener registration above runs before this effect, so join replies are not missed.
   useEffect(() => {
     if (isConnected) {
-      joinOffice(OFFICE_ID)
-      console.log('Joining ProxiSpeak office:', OFFICE_ID)
+      const { x, y } = playerRef.current
+      joinOffice(OFFICE_ID, x, y, profile.name)
     }
-  }, [isConnected, joinOffice])
+  }, [isConnected, joinOffice, profile.name])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -197,6 +269,7 @@ function App() {
     let lastDisplay = 0
 
     const keydown = (e) => {
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return
       const key = e.key.toLowerCase()
       if (
         ['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd'].includes(key)
@@ -416,21 +489,27 @@ function App() {
         drawAvatar(
           player.x,
           player.y,
-          `Player ${String(player.userId).slice(0, 4)}`,
+          player.displayName && player.displayName !== 'Guest'
+            ? player.displayName
+            : `Player ${String(player.socketId).slice(0, 4)}`,
           '#f472b6'
         )
       })
 
-      // Demo static colleagues
+      // Demo static colleagues (not real network peers)
       staticPeople.forEach((person) => {
         drawAvatar(person.x, person.y, person.name, person.color)
       })
 
       // You
-      drawAvatar(p.x, p.y, 'YOU', '#22d3ee')
+      drawAvatar(p.x, p.y, `${profileRef.current.name} (YOU)`, profileRef.current.color)
 
       if (time - lastDisplay > 80) {
-        setPosition({ x: Math.round(p.x), y: Math.round(p.y) })
+        setPosition((previous) => {
+          const x = Math.round(p.x)
+          const y = Math.round(p.y)
+          return previous.x === x && previous.y === y ? previous : { x, y }
+        })
         lastDisplay = time
       }
 
@@ -449,20 +528,39 @@ function App() {
 
   const nearbyPeople = useMemo(() => {
     const dynamicPlayers = Array.from(remotePlayersRef.current.values()).map((player) => ({
-      name: `Player ${String(player.userId).slice(0, 4)}`,
+      id: player.socketId,
+      name: player.displayName && player.displayName !== 'Guest'
+        ? player.displayName
+        : `Player ${String(player.socketId).slice(0, 4)}`,
       color: '#f472b6',
       x: player.x,
       y: player.y,
+      live: true,
     }))
 
-    return [...staticPeople, ...dynamicPlayers].map((person) => {
-      const distance = Math.hypot(position.x - person.x, position.y - person.y)
-      return {
-        ...person,
-        distance,
-      }
-    })
-  }, [position.x, position.y, isConnected])
+    const demoPeople = staticPeople.map((person) => ({
+      ...person,
+      id: `demo-${person.name}`,
+      name: `${person.name} (Demo)`,
+      live: false,
+    }))
+
+    return [...dynamicPlayers, ...demoPeople].map((person) => ({
+      ...person,
+      distance: Math.hypot(position.x - person.x, position.y - person.y),
+    }))
+  }, [position.x, position.y, remoteRevision])
+
+  // Audio developer can later consume relative offsets for live peers only.
+  const liveNearbyPeers = useMemo(() => nearbyPeople
+    .filter((person) => person.live && person.distance <= RADIUS)
+    .map((person) => ({
+      socketId: person.id,
+      distance: person.distance,
+      dx: person.x - position.x,
+      dy: person.y - position.y,
+      serverInEarshot: nearbyPeerIds.has(person.id),
+    })), [nearbyPeople, nearbyPeerIds, position.x, position.y])
 
   return (
     <div className="app-shell">
@@ -476,9 +574,39 @@ function App() {
         <div className="nav-item">◉ Team Members</div>
         <div className="nav-item">♫ Spatial Audio</div>
 
+        <div className="profile-panel">
+          <div className="profile-title">YOUR AVATAR</div>
+          <div className="profile-preview">
+            <span className="profile-orb" style={{ background: profile.color, boxShadow: `0 0 18px ${profile.color}66` }} />
+            <div><strong>{profile.name}</strong><small>Customize identity</small></div>
+          </div>
+          <form className="profile-name-form" onSubmit={saveName}>
+            <label htmlFor="avatar-name">Display name</label>
+            <div className="profile-name-row">
+              <input id="avatar-name" value={draftName} maxLength={20} onChange={(e) => setDraftName(e.target.value)} placeholder="Your name" />
+              <button type="submit">Save</button>
+            </div>
+          </form>
+          <span className="profile-color-label">Avatar color</span>
+          <div className="profile-colors" role="group" aria-label="Choose avatar color">
+            {AVATAR_COLORS.map((color) => (
+              <button
+                type="button"
+                key={color}
+                className={color === profile.color ? 'profile-color selected' : 'profile-color'}
+                style={{ background: color }}
+                aria-label={`Select ${color} avatar color`}
+                aria-pressed={color === profile.color}
+                onClick={() => selectColor(color)}
+              />
+            ))}
+          </div>
+          <p className="profile-note">Names sync with teammates. Avatar colors are local until backend support is added.</p>
+        </div>
+
         <div className="sidebar-bottom">
           <span className="status-dot" />{' '}
-          {isConnected ? 'Live Multiplayer Active' : 'Frontend Prototype'}
+          {joinedOffice ? 'Live Multiplayer Active' : isConnected ? 'Joining Office...' : 'Backend Disconnected'}
         </div>
       </aside>
 
@@ -492,7 +620,7 @@ function App() {
             </p>
           </div>
           <div className="live-pill">
-            {isConnected ? '● LIVE MULTIPLAYER' : '● LOCAL DEMO'}
+            {joinedOffice ? '● LIVE MULTIPLAYER' : isConnected ? '● JOINING OFFICE' : '● OFFLINE'}
           </div>
         </header>
 
@@ -524,7 +652,7 @@ function App() {
 
             <div>
               <small>CONNECTION</small>
-              <strong>{isConnected ? 'LIVE MULTIPLAYER' : 'LOCAL ONLY'}</strong>
+              <strong>{joinedOffice ? 'LIVE MULTIPLAYER' : isConnected ? 'JOINING OFFICE' : 'DISCONNECTED'}</strong>
             </div>
           </div>
         </section>
@@ -535,7 +663,7 @@ function App() {
             <p>Distance updates as you move through the office.</p>
 
             {nearbyPeople.map((person) => (
-              <div className="person-row" key={person.name}>
+              <div className="person-row" key={person.id}>
                 <span
                   className="person-dot"
                   style={{ background: person.color }}
@@ -560,7 +688,7 @@ function App() {
             <div className="audio-note">
               {connectionError
                 ? `Connection issue: ${connectionError}`
-                : 'Live avatar synchronization is active. Voice is not connected yet.'}
+                : `Live peers in range: ${liveNearbyPeers.length}. Voice is not connected yet.`}
             </div>
           </section>
         </div>
