@@ -1,16 +1,20 @@
-
-
 const helmet = require("helmet");
 const express = require("express");
 const cors = require("cors");
 
+const userRoutes = require("./routes/userRoutes");
+const positionRoutes = require("./routes/positionRoutes");
+const officeRoutes = require("./routes/officeRoutes");
 const errorHandler = require("./middleware/errorHandler");
 const validateJson = require("./middleware/validateJson");
+
 const app = express();
+
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(validateJson);
+
 app.get("/", (req, res) => {
   res.json({
     project: "ProxiSpeak",
@@ -26,6 +30,9 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.use("/api/users", userRoutes);
+app.use("/api/positions", positionRoutes);
+app.use("/api/offices", officeRoutes);
 
 app.use((req, res, next) => {
   const error = new Error("Route not found");
@@ -34,12 +41,5 @@ app.use((req, res, next) => {
 });
 
 app.use(errorHandler);
-
-module.exports = app;
-
-
-
-
-
 
 module.exports = app;

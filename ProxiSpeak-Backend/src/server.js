@@ -3,6 +3,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const app = require("./app");
 const connectDB = require("./config/database");
+const { initSockets } = require("./sockets");
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -10,18 +12,24 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
-io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
 
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
-  });
-});
+// Initialize modular socket event handlers and lifecycle management
+initSockets(io);
+
 const PORT = process.env.PORT || 3000;
-async function startServer() {
+
+async function startServer(port = PORT) {
   await connectDB();
-  server.listen(PORT, () => {
-    console.log(`ProxiSpeak backend running on port ${PORT}`);
+  return new Promise((resolve) => {
+    server.listen(port, () => {
+      console.log(`ProxiSpeak backend running on port ${port}`);
+      resolve({ server, io, app });
+    });
   });
 }
-startServer();
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { app, server, io, startServer };
