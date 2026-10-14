@@ -384,3 +384,9 @@
 @media (max-width: 650px) {
   .profile-panel { margin-top: 4px; }
 }
+/* Day 4/5: extra status panel and gated audio action */
+.audio-start-pending {
+  width: 100%; margin-top: 12px; padding: 12px 14px; border: 1px solid #29465d;
+  border-radius: 10px; background: #17283e; color: #90a5c0;
+  font: inherit; font-size: 12px; cursor: not-allowed; opacity: .85;
+}
