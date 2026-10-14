@@ -114,11 +114,25 @@ const nearbyPeers = await getNearbyUsers({
 ]
 ```
 
-### 3.4 Audio Volume Attenuation Formula
-$$\text{volume}(d) = \begin{cases} 1.0 & \text{if } d \le 0 \\ 1.0 - \frac{d}{\text{radius}} & \text{if } 0 < d < \text{radius} \\ 0.0 & \text{if } d \ge \text{radius} \end{cases}$$
-- Distance = $0\text{px} \rightarrow 1.0$ (100% volume)
-- Distance = $50\text{px} \rightarrow 0.5$ (50% volume)
-- Distance $\ge 100\text{px} \rightarrow 0.0$ (muted / out of range)
+### 3.4 Audio Volume Attenuation & Stereo Panning Formulas
+ProxiSpeak adheres strictly to the unified team audio attenuation formula:
+$$\begin{aligned}
+t &= \text{clamp}\left(\frac{d}{100}, 0, 1\right) \\
+\text{gain} &= 1 - (3t^2 - 2t^3) \\
+\text{Pan} &= \text{clamp}\left(\frac{dx}{100}, -1, 1\right)
+\end{aligned}$$
+
+- **Smoothstep Hermite Gain Attenuation:**
+  - $d = 0\text{px} \rightarrow \text{gain} = 1.0$ (100% volume at center)
+  - $d = 25\text{px} \rightarrow \text{gain} \approx 0.8438$
+  - $d = 50\text{px} \rightarrow \text{gain} = 0.50$ (50% volume at halfway)
+  - $d = 75\text{px} \rightarrow \text{gain} \approx 0.1563$
+  - $d \ge 100\text{px} \rightarrow \text{gain} = 0.0$ (silent cutoff at earshot radius boundary)
+- **Stereo Panning:**
+  - $dx = -100\text{px} \rightarrow \text{Pan} = -1.0$ (full left)
+  - $dx = 0\text{px} \rightarrow \text{Pan} = 0.0$ (center)
+  - $dx = +100\text{px} \rightarrow \text{Pan} = +1.0$ (full right)
+  - Clamped strictly within $[-1.0, 1.0]$.
 
 ---
 

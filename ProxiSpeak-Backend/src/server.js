@@ -3,6 +3,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const app = require("./app");
 const connectDB = require("./config/database");
+const { setupSignalingServer } = require("./signaling/signalingServer");
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -10,18 +12,30 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
-io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
 
-  socket.on("disconnect", () => {
-    console.log("User disconnected:", socket.id);
-  });
-});
+// Initialize proximity WebRTC signaling server (1000x600 canvas, 100px earshot relay)
+setupSignalingServer(io);
+
 const PORT = process.env.PORT || 3000;
+
 async function startServer() {
-  await connectDB();
-  server.listen(PORT, () => {
-    console.log(`ProxiSpeak backend running on port ${PORT}`);
+  if (process.env.MONGODB_URI) {
+    try {
+      await connectDB();
+    } catch (err) {
+      console.warn("MongoDB connection warning:", err.message);
+    }
+  }
+  return new Promise((resolve) => {
+    server.listen(PORT, () => {
+      console.log(`ProxiSpeak backend running on port ${PORT}`);
+      resolve(server);
+    });
   });
 }
-startServer();
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { server, io, startServer, PORT };

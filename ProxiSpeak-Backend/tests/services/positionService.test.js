@@ -3,7 +3,8 @@ const assert = require('node:assert');
 const {
   validateCoordinates,
   calculateDistance,
-  calculateAudioVolume
+  calculateAudioVolume,
+  calculateStereoPan
 } = require('../../src/services/positionService');
 const {
   DEFAULT_ROOM_ZONES,
@@ -78,10 +79,13 @@ describe('Position Service & Contract Validation', () => {
         .map((u) => {
           const distance = calculateDistance(pivotLocation, u.location);
           const volume = calculateAudioVolume(distance, PROXIMITY_RADIUS);
+          const pan = calculateStereoPan(pivotLocation[0], u.location[0], PROXIMITY_RADIUS);
           return {
             ...u,
             distance: Number(distance.toFixed(2)),
-            volume
+            gain: volume,
+            volume,
+            pan
           };
         })
         .filter((u) => u.distance <= PROXIMITY_RADIUS)
@@ -92,14 +96,17 @@ describe('Position Service & Contract Validation', () => {
       assert.strictEqual(nearbyUsers[0].displayName, 'Alex');
       assert.strictEqual(nearbyUsers[0].distance, 50);
       assert.strictEqual(nearbyUsers[0].volume, 0.5);
+      assert.strictEqual(nearbyUsers[0].pan, 0.3);
 
       assert.strictEqual(nearbyUsers[1].displayName, 'Sam');
       assert.strictEqual(nearbyUsers[1].distance, 60);
-      assert.strictEqual(nearbyUsers[1].volume, 0.4);
+      assert.strictEqual(nearbyUsers[1].volume, 0.352); // smoothstep 1 - (3*0.36 - 2*0.216) = 0.352
+      assert.strictEqual(nearbyUsers[1].pan, 0.6);
 
       assert.strictEqual(nearbyUsers[2].displayName, 'Boundary User');
       assert.strictEqual(nearbyUsers[2].distance, 100);
       assert.strictEqual(nearbyUsers[2].volume, 0.0);
+      assert.strictEqual(nearbyUsers[2].pan, 0.0);
 
       // Ensure far users were excluded
       const foundTaylor = nearbyUsers.some((u) => u.displayName === 'Taylor');

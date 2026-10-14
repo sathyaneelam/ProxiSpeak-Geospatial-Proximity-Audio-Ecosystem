@@ -10,30 +10,63 @@ const User = require('../models/User');
  * @param {[number, number]} pointB - [x, y] coordinates
  * @returns {number} Distance in pixels
  */
+function clamp(val, min, max) {
+  return Math.max(min, Math.min(max, val));
+}
+
 function calculateDistance(pointA, pointB) {
   if (!Array.isArray(pointA) || !Array.isArray(pointB) || pointA.length !== 2 || pointB.length !== 2) {
     throw new Error('Points must be 2-element coordinate arrays [x, y]');
   }
-  const dx = pointA[0] - pointB[0];
-  const dy = pointA[1] - pointB[1];
+  const dx = pointB[0] - pointA[0];
+  const dy = pointB[1] - pointA[1];
   return Math.sqrt(dx * dx + dy * dy);
 }
 
 /**
- * Calculate linear audio volume factor based on distance within proximity radius.
- * When distance = 0, volume = 1.0 (100%).
- * When distance >= radius, volume = 0.0 (silent).
+ * Calculate audio gain using the agreed smoothstep attenuation formula:
+ *   t = clamp(d/100, 0, 1)
+ *   gain = 1 - (3t^2 - 2t^3)
  *
  * @param {number} distance - Distance in pixels
  * @param {number} [radius=100] - Proximity threshold in pixels
- * @returns {number} Attenuation factor between 0.0 and 1.0
+ * @returns {number} Gain factor between 0.0 and 1.0
  */
 function calculateAudioVolume(distance, radius = 100) {
-  if (radius <= 0) return 0;
-  if (distance >= radius) return 0;
-  if (distance <= 0) return 1;
-  const factor = 1 - (distance / radius);
-  return Number(Math.max(0, Math.min(1, factor)).toFixed(3));
+  if (typeof distance !== 'number' || isNaN(distance) || radius <= 0) return 0;
+  if (distance <= 0) return 1.0;
+  if (distance >= radius) return 0.0;
+  const t = clamp(distance / radius, 0, 1);
+  const gain = 1 - (3 * t * t - 2 * t * t * t);
+  return Number(clamp(gain, 0, 1).toFixed(4));
+}
+
+/**
+ * Calculate stereo pan using the agreed formula:
+ *   Pan = clamp(dx/100, -1, 1)
+ *
+ * @param {number} localX - Local user X coordinate
+ * @param {number} peerX - Remote peer X coordinate
+ * @param {number} [radius=100] - Proximity threshold in pixels
+ * @returns {number} Pan factor between -1.0 and 1.0
+ */
+function calculateStereoPan(localX, peerX, radius = 100) {
+  if (typeof localX !== 'number' || typeof peerX !== 'number' || radius <= 0) return 0.0;
+  const dx = peerX - localX;
+  const pan = clamp(dx / radius, -1, 1);
+  return Number(pan.toFixed(4));
+}
+
+/**
+ * Check if distance is within earshot radius.
+ *
+ * @param {number} distance
+ * @param {number} [radius=100]
+ * @returns {boolean}
+ */
+function isWithinEarshot(distance, radius = 100) {
+  if (typeof distance !== 'number' || isNaN(distance) || distance < 0) return false;
+  return distance <= radius;
 }
 
 /**
@@ -156,11 +189,12 @@ async function getNearbyUsers({
     })
     .lean();
 
-  // Enrich with Euclidean distance and audio volume attenuation factor
+  // Enrich with Euclidean distance, smoothstep gain, and stereo pan
   return positions
     .map((pos) => {
       const distance = Number(calculateDistance([x, y], pos.location).toFixed(2));
-      const volume = calculateAudioVolume(distance, proximityRadius);
+      const gain = calculateAudioVolume(distance, proximityRadius);
+      const pan = calculateStereoPan(x, pos.location[0], proximityRadius);
       const user = pos.userId || {};
 
       return {
@@ -174,7 +208,9 @@ async function getNearbyUsers({
         isOnline: Boolean(user.isOnline),
         location: pos.location,
         distance,
-        volume,
+        gain,
+        volume: gain, // for backward compatibility
+        pan,
         lastUpdated: pos.lastUpdated
       };
     })
@@ -236,8 +272,12 @@ async function removeBySocketId(socketId) {
 }
 
 module.exports = {
+  clamp,
   calculateDistance,
   calculateAudioVolume,
+  calculateAudioGain: calculateAudioVolume,
+  calculateStereoPan,
+  isWithinEarshot,
   validateCoordinates,
   upsertPosition,
   updatePosition,
