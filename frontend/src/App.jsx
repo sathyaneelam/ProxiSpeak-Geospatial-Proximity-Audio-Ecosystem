@@ -319,6 +319,10 @@ function App() {
   const [joinedOffice, setJoinedOffice] = useState(false)
 
   const [nearbyPeerIds, setNearbyPeerIds] = useState(() => new Set())
+  const [activity, setActivity] = useState([])
+  const [hasJoinedBefore, setHasJoinedBefore] = useState(false)
+
+
 
 
 
@@ -327,6 +331,16 @@ function App() {
   useEffect(() => {
 
     const socket = socketRef.current
+
+  // Only observable server events are logged: no simulated users or fake activity.
+  function addActivity(kind, message) {
+    setActivity((old) => [{
+      id: `${Date.now()}-${Math.random()}`,
+      kind,
+      message,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }, ...old].slice(0, 8))
+  }
 
     if (!isConnected || !socket) {
 
@@ -378,9 +392,14 @@ function App() {
       }
 
       setRemotePeerRecords(Array.from(remotePlayersRef.current.values()))
-
+      // Snapshot contains authoritative server earshot results, even before a fresh move.
+      setNearbyPeerIds(new Set((payload.peers || [])
+        .filter((peer) => isOtherPlayer(peer) && peer.isWithinEarshot === true)
+        .map((peer) => peer.socketId)))
       setJoinedOffice(true)
       setSelfSocketId(socket.id)
+      setHasJoinedBefore(true)
+      addActivity('connection', 'Connected to the virtual office')
 
       console.log('Joined office:', payload.officeId, 'peers:', payload.peers?.length ?? 0)
 
@@ -395,6 +414,7 @@ function App() {
       remotePlayersRef.current.set(peer.socketId, peer)
 
       setRemotePeerRecords(Array.from(remotePlayersRef.current.values()))
+      addActivity('join', `${peer.displayName || 'A member'} joined the office`)
 
     }
 
@@ -420,7 +440,10 @@ function App() {
 
       if (!socketId) return
 
+      const departing = remotePlayersRef.current.get(socketId)
+      if (!departing) return
       remotePlayersRef.current.delete(socketId)
+      addActivity('leave', `${departing.displayName || 'A member'} left the office`)
 
       setNearbyPeerIds((previous) => {
 
@@ -443,6 +466,8 @@ function App() {
       if (!peerSocketId) return
 
       setNearbyPeerIds((previous) => new Set(previous).add(peerSocketId))
+      const person = remotePlayersRef.current.get(peerSocketId)
+      if (person) addActivity('near', `${person.displayName || 'A member'} entered your 100px range`)
 
     }
 
@@ -461,10 +486,16 @@ function App() {
         return next
 
       })
+      const person = remotePlayersRef.current.get(peerSocketId)
+      if (person) addActivity('far', `${person.displayName || 'A member'} moved out of range`)
 
     }
 
+    const handleDisconnected = () => {
+      addActivity('connection', 'Connection lost — waiting for server')
+    }
 
+    socket.on('disconnect', handleDisconnected)
 
     socket.on('office:joined', handleOfficeJoined)
 
@@ -482,6 +513,7 @@ function App() {
 
     return () => {
 
+      socket.off('disconnect', handleDisconnected)
       socket.off('office:joined', handleOfficeJoined)
 
       socket.off('user:joined', handleUserJoined)
@@ -1066,6 +1098,14 @@ function App() {
       dy: peer.y - position.y,
     })), [nearbyPeople, position.x, position.y])
 
+  const connectionLabel = joinedOffice
+    ? 'Live multiplayer'
+    : isConnected
+      ? 'Joining office…'
+      : hasJoinedBefore
+        ? 'Reconnecting…'
+        : 'Offline'
+
   const audioPeers = useMemo(() => onlineMembers.map((peer) => ({
     id: peer.id, name: peer.name, x: peer.x, y: peer.y,
   })), [onlineMembers])
@@ -1171,7 +1211,7 @@ function App() {
 
           <span className="status-dot" />{' '}
 
-          {joinedOffice ? 'Live Multiplayer Active' : isConnected ? 'Joining Office...' : 'Backend Disconnected'}
+            {connectionLabel}
 
         </div>
 
@@ -1199,13 +1239,20 @@ function App() {
 
           <div className="live-pill">
 
-            {joinedOffice ? '● LIVE MULTIPLAYER' : isConnected ? '● JOINING OFFICE' : '● OFFLINE'}
+            {connectionLabel}
 
           </div>
 
         </header>
-
-
+        {!joinedOffice && (
+          <div className="day6-recovery" role="status">
+            <span className="day6-recovery-pulse" aria-hidden="true" />
+            <div>
+              <strong>{isConnected ? 'Rejoining office' : hasJoinedBefore ? 'Connection interrupted' : 'Connecting to office'}</strong>
+              <p>{isConnected ? 'Waiting for the server to confirm your office session.' : 'We will keep trying to reconnect automatically. Your avatar stays here.'}</p>
+            </div>
+          </div>
+        )}
 
         <section className="office-card">
 
@@ -1263,7 +1310,7 @@ function App() {
 
               <small>CONNECTION</small>
 
-              <strong>{joinedOffice ? 'LIVE MULTIPLAYER' : isConnected ? 'JOINING OFFICE' : 'DISCONNECTED'}</strong>
+              <strong>{connectionLabel}</strong>
 
             </div>
 
@@ -1307,10 +1354,30 @@ function App() {
             {onlineMembers.map((person) => (
               <div className="person-row" key={person.id}>
                 <span className="person-dot" style={{ background: person.color }} />
-                <span>{person.name}</span>
-                <span className="nearby">Online</span>
+                <span className="day6-member-name">{person.name}<small>{Math.round(Math.hypot(position.x - person.x, position.y - person.y))}px away</small></span>
+                <span className={nearbyPeerIds.has(person.id) ? 'nearby' : 'faraway'}>
+                  {nearbyPeerIds.has(person.id) ? 'In range' : 'Online'}
+                </span>
               </div>
             ))}
+          </section>
+
+          <section className="info-card day6-activity">
+            <div className="day6-feed-heading">
+              <h3>Live Activity</h3>
+              <span className="day6-live-indicator">SERVER EVENTS</span>
+            </div>
+            <p>Latest joins, departures and proximity changes.</p>
+            {activity.length === 0 && <p className="day6-empty">Activity will appear when members connect or move nearby.</p>}
+            <div className="day6-feed" aria-live="polite" aria-relevant="additions">
+              {activity.map((event) => (
+                <div className={`day6-event day6-event-${event.kind}`} key={event.id}>
+                  <span className="day6-event-mark" aria-hidden="true">●</span>
+                  <span className="day6-event-message">{event.message}</span>
+                  <time>{event.time}</time>
+                </div>
+              ))}
+            </div>
           </section>
 
           <section className="info-card">

@@ -13,7 +13,7 @@ export function useSocket() {
     const socket = io(SERVER_URL, {
       autoConnect: true,
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
     })
 

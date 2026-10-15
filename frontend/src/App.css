@@ -390,3 +390,24 @@
   border-radius: 10px; background: #17283e; color: #90a5c0;
   font: inherit; font-size: 12px; cursor: not-allowed; opacity: .85;
 }
+/* ProxiSpeak Day 6: activity feed and connection recovery. Append to App.css. */
+.day6-recovery { display:flex;align-items:center;gap:14px;margin:0 0 18px;padding:15px 18px;border:1px solid rgba(251,191,36,.35);border-radius:16px;background:rgba(251,191,36,.07);color:#e6edf8; }
+.day6-recovery strong { display:block;font-size:14px;margin-bottom:4px; }
+.day6-recovery p { margin:0;color:#adc0d4;font-size:12px;line-height:1.5; }
+.day6-recovery-pulse { flex-shrink:0;width:11px;height:11px;border-radius:50%;background:#fbbf24;box-shadow:0 0 0 6px rgba(251,191,36,.13);animation:day6Pulse 1.8s ease-in-out infinite; }
+@keyframes day6Pulse { 50% { opacity:.45;transform:scale(.75); } }
+.day6-feed-heading { display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap; }
+.day6-live-indicator {color:#67e8f9;font-size:10px;letter-spacing:1.3px;font-weight:750;}
+.day6-feed {display:flex;flex-direction:column;gap:8px;max-height:290px;overflow:auto;margin-top:14px;}
+.day6-event {display:flex;align-items:center;gap:10px;min-width:0;padding:11px 12px;border-radius:11px;background:rgba(148,163,184,.07);border:1px solid rgba(148,163,184,.12);color:#dbeafe;font-size:12px;}
+.day6-event-mark {color:#94a3b8;font-size:10px;}
+.day6-event-join .day6-event-mark,.day6-event-near .day6-event-mark {color:#34d399;}
+.day6-event-leave .day6-event-mark,.day6-event-far .day6-event-mark {color:#fbbf24;}
+.day6-event-connection .day6-event-mark {color:#22d3ee;}
+.day6-event-message {min-width:0;flex:1;overflow-wrap:anywhere;}
+.day6-event time {color:#94a3b8;font-size:10px;flex-shrink:0;font-variant-numeric:tabular-nums;}
+.day6-member-name {display:flex;flex:1;flex-direction:column;gap:3px;min-width:0;}
+.day6-member-name small {color:#94a3b8;font-size:11px;}
+.day6-empty {color:#94a3b8;font-size:12px;}
+@media (prefers-reduced-motion:reduce){.day6-recovery-pulse{animation:none;}}
+
