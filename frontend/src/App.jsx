@@ -243,6 +243,36 @@ function isBlocked(x, y) {
 
 
 
+function getRoom(x, y) {
+  const zone = roomZones.find((room) =>
+    x >= room.x && x <= room.x + room.w &&
+    y >= room.y && y <= room.y + room.h
+  )
+  return zone?.title || 'CORRIDOR'
+}
+
+function MiniMap({ position, members, selfColor, showPeers }) {
+  return (
+    <div className="day7-minimap" role="img" aria-label={`Office mini map. Your position: ${position.x}, ${position.y}. ${showPeers ? members.length : 0} other members visible.`}>
+      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect width={WIDTH} height={HEIGHT} rx="22" fill="#0b1828" />
+        <rect x="345" y="55" width="310" height="490" rx="24" fill="#162b40" stroke="#35516d" strokeWidth="3" />
+        {roomZones.map((zone) => (
+          <g key={zone.title}>
+            <rect x={zone.x} y={zone.y} width={zone.w} height={zone.h} rx="19" fill={zone.fill} stroke={zone.stroke} strokeWidth="4" />
+            <text x={zone.x + zone.w / 2} y={zone.y + zone.h / 2} fill="#a9c4d8" fontSize="20" fontWeight="600" textAnchor="middle">{zone.title.replace('WORKSTATION', 'DESK')}</text>
+          </g>
+        ))}
+        {showPeers && members.map((member) => (
+          <circle key={member.id} cx={member.x} cy={member.y} r="16" fill={member.color} stroke="#ffffff" strokeWidth="4" />
+        ))}
+        <circle cx={position.x} cy={position.y} r="20" fill={selfColor} stroke="#ffffff" strokeWidth="5" />
+      </svg>
+      <div className="day7-map-legend"><span><i style={{ backgroundColor: selfColor }} /> You</span><span><i style={{ backgroundColor: '#f472b6' }} /> Teammates</span></div>
+    </div>
+  )
+}
+
 function App() {
 
   const {
@@ -281,6 +311,7 @@ function App() {
 
 
   const [position, setPosition] = useState({ x: 500, y: 300 })
+  const [hoveredPeer, setHoveredPeer] = useState(null)
 
 
 
@@ -594,6 +625,24 @@ function App() {
 
     const clearKeys = () => keysRef.current.clear()
 
+    const handleCanvasMouseMove = (event) => {
+      const bounds = canvas.getBoundingClientRect()
+      const x = (event.clientX - bounds.left) * WIDTH / bounds.width
+      const y = (event.clientY - bounds.top) * HEIGHT / bounds.height
+      let nearest = null
+      let nearestDistance = 32
+      for (const peer of remotePlayersRef.current.values()) {
+        if (!Number.isFinite(peer.x) || !Number.isFinite(peer.y)) continue
+        const distance = Math.hypot(peer.x - x, peer.y - y)
+        if (distance < nearestDistance) {
+          nearest = peer.socketId
+          nearestDistance = distance
+        }
+      }
+      setHoveredPeer((previous) => previous === nearest ? previous : nearest)
+    }
+    const handleCanvasMouseLeave = () => setHoveredPeer(null)
+
 
 
     window.addEventListener('keydown', keydown)
@@ -601,6 +650,8 @@ function App() {
     window.addEventListener('keyup', keyup)
 
     window.addEventListener('blur', clearKeys)
+    canvas.addEventListener('mousemove', handleCanvasMouseMove)
+    canvas.addEventListener('mouseleave', handleCanvasMouseLeave)
 
 
 
@@ -1061,6 +1112,8 @@ function App() {
       window.removeEventListener('keyup', keyup)
 
       window.removeEventListener('blur', clearKeys)
+      canvas.removeEventListener('mousemove', handleCanvasMouseMove)
+      canvas.removeEventListener('mouseleave', handleCanvasMouseLeave)
 
     }
 
@@ -1081,6 +1134,18 @@ function App() {
         y: peer.y,
       }))
   }, [remotePeerRecords, joinedOffice])
+
+  const currentRoom = useMemo(() => getRoom(position.x, position.y), [position.x, position.y])
+  const roomCounts = useMemo(() => {
+    const all = Object.fromEntries([...roomZones.map((room) => room.title), 'CORRIDOR'].map((name) => [name, 0]))
+    if (!joinedOffice) return all
+    all[currentRoom] += 1
+    for (const peer of onlineMembers) all[getRoom(peer.x, peer.y)] += 1
+    return all
+  }, [joinedOffice, currentRoom, onlineMembers])
+  const activeHoveredPeer = hoveredPeer && joinedOffice
+    ? onlineMembers.find((peer) => peer.id === hoveredPeer)
+    : null
 
   const nearbyPeople = useMemo(() => onlineMembers.map((peer) => ({
     ...peer,
@@ -1272,10 +1337,15 @@ function App() {
 
 
 
-          <div className="canvas-wrapper">
-
-            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} />
-
+          <div className="canvas-wrapper day7-canvas-wrap">
+            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} aria-label="Virtual office map, use arrow keys or WASD to move" />
+            {activeHoveredPeer && (
+              <div className="day7-peer-tooltip" style={{ left: `${activeHoveredPeer.x / WIDTH * 100}%`, top: `${activeHoveredPeer.y / HEIGHT * 100}%` }} role="status">
+                <strong>{activeHoveredPeer.name}</strong>
+                <span>{getRoom(activeHoveredPeer.x, activeHoveredPeer.y)}</span>
+                <small>{Math.round(Math.hypot(position.x - activeHoveredPeer.x, position.y - activeHoveredPeer.y))} px away · Online</small>
+              </div>
+            )}
           </div>
 
 
@@ -1319,6 +1389,25 @@ function App() {
         </section>
 
 
+
+        <div className="day7-overview-grid">
+          <section className="info-card day7-overview-card">
+            <div className="day7-card-heading"><div><h3>Live Mini Map</h3><p>Office positions, updated as teammates move.</p></div><span className="day7-chip">LIVE</span></div>
+            <MiniMap position={position} members={onlineMembers} selfColor={profile.color} showPeers={joinedOffice} />
+            <p className="day7-footnote">Hover over a teammate on the main map to see their details.</p>
+          </section>
+          <section className="info-card day7-overview-card">
+            <div className="day7-card-heading"><div><h3>Room Occupancy</h3><p>Live distribution across the office.</p></div><span className="day7-chip">{joinedOffice ? onlineMembers.length + 1 : 0} ONLINE</span></div>
+            <div className="day7-current-room"><small>YOUR CURRENT AREA</small><strong>{currentRoom}</strong></div>
+            <div className="day7-room-list">
+              {[...roomZones.map((room) => room.title), 'CORRIDOR'].map((name) => (
+                <div className="day7-room-row" key={name}>
+                  <span>{name}</span><strong>{roomCounts[name]} <small>{roomCounts[name] === 1 ? 'person' : 'people'}</small></strong>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
 
         <div className="bottom-grid">
 

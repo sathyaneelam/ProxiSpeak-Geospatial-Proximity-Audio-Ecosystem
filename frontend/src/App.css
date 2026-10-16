@@ -410,4 +410,30 @@
 .day6-member-name small {color:#94a3b8;font-size:11px;}
 .day6-empty {color:#94a3b8;font-size:12px;}
 @media (prefers-reduced-motion:reduce){.day6-recovery-pulse{animation:none;}}
+/* ProxiSpeak Day 7 — live map, room occupancy and peer tooltip */
+.day7-overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:20px 0}
+.day7-overview-card{min-width:0}
+.day7-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.day7-card-heading p{margin:5px 0 14px}
+.day7-chip{white-space:nowrap;font-size:10px;font-weight:800;letter-spacing:.08em;color:#67e8f9;border:1px solid rgba(103,232,249,.28);background:rgba(8,145,178,.12);padding:6px 9px;border-radius:99px}
+.day7-minimap{border:1px solid rgba(130,166,200,.2);border-radius:14px;background:#071321;padding:10px;overflow:hidden}
+.day7-minimap svg{display:block;width:100%;height:auto;max-height:265px}
+.day7-map-legend{display:flex;align-items:center;gap:18px;color:#a9bfd2;font-size:12px;margin-top:7px}
+.day7-map-legend span{display:inline-flex;align-items:center;gap:7px}
+.day7-map-legend i{height:9px;width:9px;border-radius:50%;display:inline-block}
+.day7-footnote{font-size:12px;margin:9px 0 0;color:#91aabd}
+.day7-current-room{padding:12px 14px;border-radius:12px;background:rgba(34,211,238,.09);border:1px solid rgba(34,211,238,.17);display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.day7-current-room small{font-size:10px;letter-spacing:.1em;color:#9eafc6}
+.day7-current-room strong{color:#a5f3fc;font-size:15px}
+.day7-room-list{display:flex;flex-direction:column;gap:4px}
+.day7-room-row{display:flex;justify-content:space-between;gap:12px;align-items:center;border-bottom:1px solid rgba(160,184,214,.09);padding:8px 2px;font-size:12px;color:#c6d7e8}
+.day7-room-row strong{color:#e5f8ff;white-space:nowrap}
+.day7-room-row small{font-size:11px;color:#91aabd;font-weight:400}
+.day7-canvas-wrap{position:relative}
+.day7-peer-tooltip{position:absolute;transform:translate(-50%,-115%);pointer-events:none;z-index:5;display:flex;flex-direction:column;gap:2px;min-width:128px;padding:9px 12px;border-radius:11px;color:#e9faff;background:rgba(6,16,31,.95);border:1px solid rgba(103,232,249,.42);box-shadow:0 12px 30px rgba(0,0,0,.4);font-size:12px;white-space:nowrap}
+.day7-peer-tooltip strong{font-size:13px}
+.day7-peer-tooltip span{color:#67e8f9;font-size:10px}
+.day7-peer-tooltip small{color:#a6bed3}
+@media(max-width:960px){.day7-overview-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.day7-overview-grid{gap:12px}.day7-chip{font-size:9px}.day7-peer-tooltip{padding:5px 7px;font-size:10px}}
 
