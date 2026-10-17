@@ -4,6 +4,7 @@ import './App.css'
 
 import { useSocket } from './hooks/useSocket'
 import { useProximityAudio } from './audio/useProximityAudio'
+import { createRoomCamera, getCameraTarget, updateRoomCamera, applyRoomCamera, screenToWorld } from './camera/roomCamera'
 
 
 
@@ -292,6 +293,9 @@ function App() {
 
 
   const canvasRef = useRef(null)
+  const cameraRef = useRef(createRoomCamera())
+  const tooltipRef = useRef(null)
+  const hoveredPeerIdRef = useRef(null)
 
   const keysRef = useRef(new Set())
 
@@ -312,6 +316,8 @@ function App() {
 
   const [position, setPosition] = useState({ x: 500, y: 300 })
   const [hoveredPeer, setHoveredPeer] = useState(null)
+  const [isImmersiveMode, setIsImmersiveMode] = useState(false)
+const [immersiveRoom, setImmersiveRoom] = useState(null)
 
 
 
@@ -627,8 +633,9 @@ function App() {
 
     const handleCanvasMouseMove = (event) => {
       const bounds = canvas.getBoundingClientRect()
-      const x = (event.clientX - bounds.left) * WIDTH / bounds.width
-      const y = (event.clientY - bounds.top) * HEIGHT / bounds.height
+      const sx = (event.clientX - bounds.left) * WIDTH / bounds.width
+      const sy = (event.clientY - bounds.top) * HEIGHT / bounds.height
+      const { x, y } = screenToWorld(sx, sy, cameraRef.current)
       let nearest = null
       let nearestDistance = 32
       for (const peer of remotePlayersRef.current.values()) {
@@ -639,9 +646,13 @@ function App() {
           nearestDistance = distance
         }
       }
+      hoveredPeerIdRef.current = nearest
       setHoveredPeer((previous) => previous === nearest ? previous : nearest)
     }
-    const handleCanvasMouseLeave = () => setHoveredPeer(null)
+    const handleCanvasMouseLeave = () => {
+      hoveredPeerIdRef.current = null
+      setHoveredPeer(null)
+    }
 
 
 
@@ -728,118 +739,265 @@ function App() {
 
 
     function drawAvatar(x, y, name, color) {
+      // Ground contact shadow and a soft character glow. Position/radius stay unchanged.
+      ctx.save()
+      ctx.beginPath()
+      ctx.ellipse(x + 3, y + 16, 24, 9, -0.12, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.44)'
+      ctx.filter = 'blur(5px)'
+      ctx.fill()
+      ctx.filter = 'none'
 
       ctx.beginPath()
-
-      ctx.arc(x, y, 18, 0, Math.PI * 2)
-
-      ctx.fillStyle = color
-
-      ctx.shadowBlur = 22
-
+      ctx.arc(x, y, 22, 0, Math.PI * 2)
+      ctx.strokeStyle = `${color}70`
+      ctx.lineWidth = 2.2
+      ctx.shadowBlur = 16
       ctx.shadowColor = color
-
-      ctx.fill()
-
+      ctx.stroke()
       ctx.shadowBlur = 0
 
-
-
+      const body = ctx.createRadialGradient(x - 7, y - 9, 2, x, y, 23)
+      body.addColorStop(0, 'rgba(255,255,255,0.95)')
+      body.addColorStop(0.12, color)
+      body.addColorStop(1, '#12263e')
       ctx.beginPath()
-
-      ctx.arc(x, y, 22, 0, Math.PI * 2)
-
-      ctx.strokeStyle = 'rgba(255,255,255,0.22)'
-
-      ctx.lineWidth = 1.5
-
+      ctx.arc(x, y, 18, 0, Math.PI * 2)
+      ctx.fillStyle = body
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)'
+      ctx.lineWidth = 1.3
       ctx.stroke()
 
-
-
-      ctx.fillStyle = '#ffffff'
-
-      ctx.textAlign = 'center'
+      ctx.beginPath()
+      ctx.arc(x - 6, y - 8, 4, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255,255,255,0.58)'
+      ctx.fill()
 
       ctx.font = '600 13px Arial'
-
-      ctx.fillText(name, x, y - 29)
-
+      ctx.textAlign = 'center'
+      const labelWidth = Math.min(205, ctx.measureText(name).width + 24)
+      drawRoundedRect(x - labelWidth / 2, y - 51, labelWidth, 20, 9, 'rgba(7,19,36,0.84)', 'rgba(125,185,220,0.26)')
+      ctx.fillStyle = '#f5fbff'
+      ctx.fillText(name, x, y - 37)
+      ctx.restore()
     }
-
-
 
     function drawRoom(zone) {
+      const { x, y, w, h, title, subtitle } = zone
+      ctx.save()
 
-      drawRoundedRect(zone.x, zone.y, zone.w, zone.h, 20, zone.fill, zone.stroke)
+      // Architectural floor and soft perimeter shadow.
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.48)'
+      ctx.shadowBlur = 22
+      ctx.shadowOffsetY = 9
+      drawRoundedRect(x, y, w, h, 17, '#332c28', '#b9a187')
+      ctx.shadowBlur = 0
+      ctx.shadowOffsetY = 0
 
+      // Clipped warm-oak floorboards, deliberately visual-only.
+      ctx.beginPath()
+      ctx.roundRect(x + 5, y + 5, w - 10, h - 10, 13)
+      ctx.clip()
+      const floor = ctx.createLinearGradient(x, y, x + w, y + h)
+      floor.addColorStop(0, '#c9a47b')
+      floor.addColorStop(0.52, '#ad8865')
+      floor.addColorStop(1, '#87694f')
+      ctx.fillStyle = floor
+      ctx.fillRect(x + 5, y + 5, w - 10, h - 10)
 
-
-      const glow = ctx.createLinearGradient(zone.x, zone.y, zone.x + zone.w, zone.y + zone.h)
-
-      glow.addColorStop(0, 'rgba(255,255,255,0.07)')
-
-      glow.addColorStop(1, 'rgba(255,255,255,0.01)')
-
-      drawRoundedRect(zone.x + 6, zone.y + 6, zone.w - 12, zone.h - 12, 16, glow)
-
-
-
-      ctx.fillStyle = '#dbeafe'
-
-      ctx.font = '700 14px Arial'
-
-      ctx.textAlign = 'left'
-
-      ctx.fillText(zone.title, zone.x + 18, zone.y + 26)
-
-
-
-      ctx.fillStyle = '#9ab2ca'
-
-      ctx.font = '11px Arial'
-
-      ctx.fillText(zone.subtitle, zone.x + 18, zone.y + 44)
-
-    }
-
-
-
-    function drawObstacle(item) {
-
-      if (item.type === 'desk') {
-
-        drawRoundedRect(item.x, item.y, item.w, item.h, 8, '#375f86', '#6ea8d6')
-
-        ctx.fillStyle = 'rgba(255,255,255,0.12)'
-
-        ctx.fillRect(item.x + 8, item.y + 5, item.w - 16, 4)
-
-      } else if (item.type === 'table') {
-
-        drawRoundedRect(item.x, item.y, item.w, item.h, 12, '#5f7b95', '#a4c0d8')
-
-        ctx.fillStyle = 'rgba(255,255,255,0.10)'
-
-        ctx.fillRect(item.x + 16, item.y + 10, item.w - 32, 5)
-
-      } else if (item.type === 'sofa') {
-
-        drawRoundedRect(item.x, item.y, item.w, item.h, 12, '#4f657d', '#91aac5')
-
-      } else if (item.type === 'coffee') {
-
-        drawRoundedRect(item.x, item.y, item.w, item.h, 10, '#6a7c8f', '#b6c7d8')
-
-      } else {
-
-        drawRoundedRect(item.x, item.y, item.w, item.h, 8, '#3a5068', '#738ba4')
-
+      ctx.lineWidth = 1
+      for (let row = 0, fy = y + 6; fy < y + h; fy += 17, row++) {
+        ctx.strokeStyle = row % 2 ? 'rgba(64,41,26,0.23)' : 'rgba(255,238,207,0.21)'
+        ctx.beginPath()
+        ctx.moveTo(x + 5, fy)
+        ctx.lineTo(x + w - 5, fy)
+        ctx.stroke()
+        for (let fx = x + 5 + (row % 3) * 31; fx < x + w; fx += 83) {
+          ctx.strokeStyle = 'rgba(64,41,26,0.17)'
+          ctx.beginPath()
+          ctx.moveTo(fx, fy)
+          ctx.lineTo(fx, fy + 17)
+          ctx.stroke()
+        }
       }
 
+      // Accent rug in meeting room and lounge.
+      if (title === 'MEETING AREA' || title === 'LOUNGE') {
+        const carpet = title === 'LOUNGE' ? '#708b7b' : '#758a8f'
+        drawRoundedRect(x + 23, y + 75, w - 46, h - 95, 10, carpet, 'rgba(247,240,220,0.38)')
+        ctx.strokeStyle = 'rgba(255,255,255,0.11)'
+        ctx.strokeRect(x + 29, y + 81, w - 58, h - 107)
+      }
+
+      // An architectural dark header panel with readable labels.
+      const banner = ctx.createLinearGradient(x, y, x, y + 58)
+      banner.addColorStop(0, 'rgba(17,29,37,0.96)')
+      banner.addColorStop(1, 'rgba(17,29,37,0.83)')
+      ctx.fillStyle = banner
+      ctx.fillRect(x + 5, y + 5, w - 10, 54)
+      ctx.fillStyle = '#f7f2e8'
+      ctx.font = 'bold 14px Arial'
+      ctx.fillText(title, x + 18, y + 26)
+      ctx.font = '11px Arial'
+      ctx.fillStyle = '#c5d8d4'
+      ctx.fillText(subtitle, x + 18, y + 43)
+
+      // Wall trim; no changes to the physical obstacle map.
+      ctx.strokeStyle = 'rgba(255,233,194,0.65)'
+      ctx.lineWidth = 3
+      ctx.strokeRect(x + 7, y + 61, w - 14, h - 69)
+      ctx.restore()
     }
 
+    function drawObstacle(item) {
+      const { x, y, w, h, type } = item
+      ctx.save()
+      ctx.shadowColor = 'rgba(21, 16, 13, 0.40)'
+      ctx.shadowBlur = 8
+      ctx.shadowOffsetY = 4
 
+      // All detailed furniture is drawn within its existing collision rectangle.
+      if (type === 'desk') {
+        const wood = ctx.createLinearGradient(x, y, x + w, y + h)
+        wood.addColorStop(0, '#edc798')
+        wood.addColorStop(0.55, '#c18a58')
+        wood.addColorStop(1, '#94633d')
+        drawRoundedRect(x, y, w, h, 4, '#58412f', '#3b3027')
+        drawRoundedRect(x + 2, y + 2, w - 4, h - 5, 3, wood, '#f7d6a9')
+        ctx.shadowBlur = 0
+        ctx.shadowOffsetY = 0
+
+        // Computer monitor, stand, screen reflection.
+        drawRoundedRect(x + 8, y + 5, 23, 11, 2, '#202b34', '#53626d')
+        drawRoundedRect(x + 10, y + 7, 19, 7, 1, '#477b94', '#8fc3d2')
+        ctx.fillStyle = '#b7d8e1'
+        ctx.fillRect(x + 12, y + 8, 10, 1)
+        ctx.fillStyle = '#3e4548'
+        ctx.fillRect(x + 18, y + 16, 3, 3)
+        ctx.fillRect(x + 14, y + 18, 11, 2)
+
+        // Keyboard keys + mouse + notebook.
+        drawRoundedRect(x + 9, y + 21, 24, 4, 1, '#30363b', '#737f83')
+        ctx.fillStyle = '#c6d5d7'
+        for (let k = 0; k < 8; k++) ctx.fillRect(x + 11 + k * 2.5, y + 22, 1, 1)
+        drawRoundedRect(x + 36, y + 19, 4, 7, 2, '#292e32', '#afb9b7')
+        drawRoundedRect(x + 45, y + 6, 11, 16, 1, '#e4dcc6', '#9c8a71')
+        ctx.strokeStyle = '#8ba9af'
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(x + 47, y + 11)
+        ctx.lineTo(x + 54, y + 11)
+        ctx.moveTo(x + 47, y + 14)
+        ctx.lineTo(x + 54, y + 14)
+        ctx.stroke()
+
+        // Top-down office chair: backrest, cushioned seat and arms.
+        drawRoundedRect(x + w - 13, y + 4, 10, 20, 4, '#343c40', '#97a4a0')
+        drawRoundedRect(x + w - 12, y + 8, 8, 12, 3, '#66767a', '#b3beb8')
+        ctx.fillStyle = '#242a2e'
+        ctx.fillRect(x + w - 14, y + 10, 2, 9)
+        ctx.fillRect(x + w - 3, y + 10, 2, 9)
+      } else if (type === 'table') {
+        // Conference table with chairs set around its perimeter.
+        drawRoundedRect(x, y, w, h, 8, '#6b756d', '#b8beb5')
+        ctx.shadowBlur = 0
+        ctx.shadowOffsetY = 0
+        const chairs = [0, 1, 2, 3]
+        chairs.forEach((i) => {
+          const cx = x + 25 + i * 27
+          drawRoundedRect(cx, y + 2, 17, 10, 4, '#566358', '#adb9ab')
+          drawRoundedRect(cx, y + h - 12, 17, 10, 4, '#566358', '#adb9ab')
+        })
+        const tabletop = ctx.createLinearGradient(x + 10, y + 12, x + w - 10, y + h - 12)
+        tabletop.addColorStop(0, '#e5bd8c')
+        tabletop.addColorStop(1, '#9c6a42')
+        drawRoundedRect(x + 11, y + 12, w - 22, h - 24, 8, tabletop, '#f1d7b2')
+        ctx.fillStyle = '#efe5d1'
+        ctx.beginPath()
+        ctx.arc(x + w / 2, y + h / 2, 5, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.fillStyle = '#5c8967'
+        ctx.beginPath()
+        ctx.arc(x + w / 2, y + h / 2, 3, 0, Math.PI * 2)
+        ctx.fill()
+      } else if (type === 'sofa') {
+        drawRoundedRect(x, y, w, h, 9, '#314a45', '#1f3737')
+        drawRoundedRect(x + 4, y + 4, w - 8, h - 8, 6, '#89998a', '#c1cbbb')
+        ctx.shadowBlur = 0
+        ctx.shadowOffsetY = 0
+        drawRoundedRect(x + 3, y + 3, w - 6, 9, 4, '#526b5f', '#9fb09c')
+        for (let i = 0; i < 3; i++) {
+          const sw = (w - 18) / 3
+          drawRoundedRect(x + 7 + i * sw, y + 16, sw - 3, h - 22, 3, '#abb6a4', '#728b77')
+        }
+        drawRoundedRect(x + 2, y + 7, 8, h - 10, 3, '#61786c')
+        drawRoundedRect(x + w - 10, y + 7, 8, h - 10, 3, '#61786c')
+      } else if (type === 'coffee') {
+        drawRoundedRect(x, y, w, h, 8, '#93866e', '#cbbfa7')
+        ctx.shadowBlur = 0
+        ctx.shadowOffsetY = 0
+        ctx.beginPath()
+        ctx.ellipse(x + w / 2, y + h / 2, 25, 12, 0, 0, Math.PI * 2)
+        ctx.fillStyle = '#c39b6d'
+        ctx.fill()
+        ctx.strokeStyle = '#f3d3a6'
+        ctx.lineWidth = 2
+        ctx.stroke()
+        ctx.fillStyle = '#f1e9d5'
+        ctx.beginPath()
+        ctx.arc(x + w / 2 + 11, y + h / 2, 5, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.fillStyle = '#5d8567'
+        ctx.beginPath()
+        ctx.arc(x + w / 2 - 10, y + h / 2, 6, 0, Math.PI * 2)
+        ctx.fill()
+      } else if (type === 'counter') {
+        const wood = ctx.createLinearGradient(x, y, x + w, y + h)
+        wood.addColorStop(0, '#e4c69f')
+        wood.addColorStop(1, '#89603b')
+        drawRoundedRect(x, y, w, h, 4, wood, '#e9d3b2')
+        ctx.shadowBlur = 0
+        ctx.shadowOffsetY = 0
+        drawRoundedRect(x + 12, y + 6, 26, 12, 2, '#263b43', '#99aeb1')
+        drawRoundedRect(x + 15, y + 8, 20, 7, 1, '#6899a2')
+        drawRoundedRect(x + 50, y + 7, 18, 10, 2, '#ebe4d3', '#9f9181')
+        ctx.fillStyle = '#547861'
+        ctx.beginPath()
+        ctx.arc(x + w - 16, y + 12, 7, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.restore()
+    }
+
+    function drawFloorDetails() {
+      // Decorative only: never modifies world or collision coordinates.
+      ctx.save()
+      ctx.strokeStyle = 'rgba(138,190,220,0.043)'
+      ctx.lineWidth = 1
+      for (let x = 12; x < WIDTH; x += 24) {
+        ctx.beginPath()
+        ctx.moveTo(x, 0)
+        ctx.lineTo(x, HEIGHT)
+        ctx.stroke()
+      }
+      for (let y = 12; y < HEIGHT; y += 24) {
+        ctx.beginPath()
+        ctx.moveTo(0, y)
+        ctx.lineTo(WIDTH, y)
+        ctx.stroke()
+      }
+      // Corridor guidance stripes and recessed floor lighting.
+      for (const x of [367, 633]) {
+        const beam = ctx.createLinearGradient(x - 8, 0, x + 8, 0)
+        beam.addColorStop(0, 'rgba(34,211,238,0)')
+        beam.addColorStop(0.5, 'rgba(34,211,238,0.14)')
+        beam.addColorStop(1, 'rgba(34,211,238,0)')
+        ctx.fillStyle = beam
+        ctx.fillRect(x - 8, 110, 16, 375)
+      }
+      ctx.restore()
+    }
 
     function render(time) {
 
@@ -921,6 +1079,24 @@ function App() {
 
 
 
+      // Camera changes only how the world is drawn, not positions or collisions.
+      // Reset transform each frame so zoom does not accumulate.
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.clearRect(0, 0, WIDTH, HEIGHT)
+      updateRoomCamera(cameraRef.current, getCameraTarget(p.x, p.y), dt)
+      // Position the HTML tooltip outside React render using the live camera.
+      // This follows zoom animation smoothly and avoids reading refs in JSX.
+      const hoveredId = hoveredPeerIdRef.current
+      const hovered = hoveredId ? remotePlayersRef.current.get(hoveredId) : null
+      if (tooltipRef.current && hovered && Number.isFinite(hovered.x) && Number.isFinite(hovered.y)) {
+        const viewX = WIDTH / 2 + (hovered.x - cameraRef.current.centerX) * cameraRef.current.zoom
+        const viewY = HEIGHT / 2 + (hovered.y - cameraRef.current.centerY) * cameraRef.current.zoom
+        tooltipRef.current.style.left = `${(viewX / WIDTH) * 100}%`
+        tooltipRef.current.style.top = `${(viewY / HEIGHT) * 100}%`
+      }
+      ctx.save()
+      applyRoomCamera(ctx, cameraRef.current)
+
       // Background gradient
 
       const bg = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
@@ -1001,6 +1177,8 @@ function App() {
 
       drawRoundedRect(345, 55, 310, 490, 24, 'rgba(18, 33, 50, 0.72)', '#294158')
 
+      drawFloorDetails()
+
 
 
       roomZones.forEach(drawRoom)
@@ -1075,6 +1253,9 @@ function App() {
 
 
 
+      // Restore unscaled canvas for the next frame.
+      ctx.restore()
+
       if (time - lastDisplay > 80) {
 
         setPosition((previous) => {
@@ -1086,6 +1267,17 @@ function App() {
           return previous.x === x && previous.y === y ? previous : { x, y }
 
         })
+        const detectedRoom = getRoom(p.x, p.y)
+const shouldImmerse = detectedRoom !== 'CORRIDOR'
+
+setIsImmersiveMode((previous) =>
+  previous === shouldImmerse ? previous : shouldImmerse
+)
+
+setImmersiveRoom((previous) => {
+  const nextRoom = shouldImmerse ? detectedRoom : null
+  return previous === nextRoom ? previous : nextRoom
+})
 
         lastDisplay = time
 
@@ -1190,7 +1382,10 @@ function App() {
 
   return (
 
-    <div className="app-shell">
+    <div
+  className={`app-shell${isImmersiveMode ? ' immersive-mode' : ''}`}
+  data-active-room={immersiveRoom || 'CORRIDOR'}
+>
 
       <aside className="sidebar">
 
@@ -1340,7 +1535,7 @@ function App() {
           <div className="canvas-wrapper day7-canvas-wrap">
             <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} aria-label="Virtual office map, use arrow keys or WASD to move" />
             {activeHoveredPeer && (
-              <div className="day7-peer-tooltip" style={{ left: `${activeHoveredPeer.x / WIDTH * 100}%`, top: `${activeHoveredPeer.y / HEIGHT * 100}%` }} role="status">
+              <div ref={tooltipRef} className="day7-peer-tooltip" style={{ left: '50%', top: '50%' }} role="status">
                 <strong>{activeHoveredPeer.name}</strong>
                 <span>{getRoom(activeHoveredPeer.x, activeHoveredPeer.y)}</span>
                 <small>{Math.round(Math.hypot(position.x - activeHoveredPeer.x, position.y - activeHoveredPeer.y))} px away · Online</small>

@@ -437,3 +437,84 @@
 @media(max-width:960px){.day7-overview-grid{grid-template-columns:1fr}}
 @media(max-width:600px){.day7-overview-grid{gap:12px}.day7-chip{font-size:9px}.day7-peer-tooltip{padding:5px 7px;font-size:10px}}
 
+/* ========================================
+   PROXISPEAK — IMMERSIVE ROOM MODE
+   ======================================== */
+
+/* Hide dashboard elements inside a room */
+.app-shell.immersive-mode .sidebar,
+.app-shell.immersive-mode .topbar,
+.app-shell.immersive-mode .day6-recovery,
+.app-shell.immersive-mode .day7-overview-grid,
+.app-shell.immersive-mode .bottom-grid {
+  display: none !important;
+}
+
+/* Remove main dashboard spacing */
+.app-shell.immersive-mode .main-content {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Turn the office panel into a full-viewport scene */
+.app-shell.immersive-mode .office-card {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  background: #081321;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+/* Hide toolbar and footer while immersive */
+.app-shell.immersive-mode .office-toolbar,
+.app-shell.immersive-mode .office-footer {
+  display: none !important;
+}
+
+/* Expand the existing Canvas container */
+.app-shell.immersive-mode .canvas-wrapper {
+  position: relative;
+  flex: 1 1 auto;
+
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+/* Canvas fills the browser viewport */
+.app-shell.immersive-mode .canvas-wrapper canvas {
+  display: block;
+
+  width: 100% !important;
+  height: 100% !important;
+
+  max-width: none !important;
+  max-height: none !important;
+
+  border: none;
+  border-radius: 0;
+}
+
