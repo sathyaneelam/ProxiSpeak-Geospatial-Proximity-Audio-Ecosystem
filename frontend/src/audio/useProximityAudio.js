@@ -18,7 +18,7 @@ export function useProximityAudio({
   localPosition = { x: 500, y: 300 },
   peers = [],
   earshotRadius = DEFAULT_EARSHOT_RADIUS,
-  signalingUrl = 'http://localhost:4000',
+  signalingUrl = 'http://localhost:3000',
   preferredTransport = 'broadcast', // 'broadcast' for local zero-config 2-tab demo, or 'socketio'
 }) {
   const [isAudioActive, setIsAudioActive] = useState(false);

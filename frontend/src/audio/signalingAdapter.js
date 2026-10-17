@@ -61,7 +61,7 @@ export class BaseSignalingTransport {
  * Socket.IO Implementation for Member 2's Signaling Server
  */
 export class SocketIOSignalingTransport extends BaseSignalingTransport {
-  constructor(serverUrl = 'http://localhost:4000', options = {}) {
+  constructor(serverUrl = 'http://localhost:3000', options = {}) {
     super();
     this.serverUrl = serverUrl;
     this.options = {
