@@ -1,0 +1,223 @@
+/* ProxiSpeak Campus V2 – an original, reference-inspired 2D collaboration layer. */
+.app-shell.campus-v2 .canvas-wrapper{position:relative; isolation:isolate; background:#27392c; overflow:hidden;}
+.app-shell.campus-v2 .canvas-wrapper canvas{display:block;}
+.campus-hud{position:absolute;inset:0;z-index:5;pointer-events:none;color:#fbf8f1;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+.campus-hud-top{position:absolute;left:14px;right:14px;top:14px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
+.campus-brand-chip,.campus-live-badge{backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);background:rgba(25,37,37,.87);border:1px solid rgba(237,242,227,.21);box-shadow:0 7px 20px #182e2420;display:flex;align-items:center;gap:8px;border-radius:9px;padding:9px 12px;white-space:nowrap;}
+.campus-brand-chip{max-width:min(57%,420px);overflow:hidden;font-size:10px;letter-spacing:.13em;font-weight:780;}
+.campus-brand-space{color:#e8cf9f;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;}
+.campus-brand-slash{color:#758e84;}
+.campus-chip-dot{width:9px;height:9px;border-radius:3px;background:#e6bb78;box-shadow:0 0 0 3px #e6bb7822;flex:none;}
+.campus-live-badge{font-size:11px;font-weight:650;letter-spacing:.03em;color:#e6f0e5;padding:9px 11px;}
+.campus-online-light,.campus-offline-light{width:7px;height:7px;border-radius:50%;background:#83dea5;box-shadow:0 0 8px #83dea575;display:inline-block;}
+.campus-offline-light{background:#dbaa75;box-shadow:0 0 8px #dbaa7580;}
+.campus-member-rail{position:absolute;top:59px;right:16px;display:flex;gap:7px;max-width:min(68%,590px);overflow:hidden;}
+.campus-member-card{width:80px;min-width:80px;height:82px;background:rgba(248,243,230,.96);border:1px solid rgba(255,255,255,.8);border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:5px;position:relative;box-shadow:0 9px 22px rgba(17,36,32,.21);}
+.campus-member-card.is-self{background:rgba(237,246,239,.98);border-color:#a5cbb7;}
+.campus-person-portrait{position:relative;width:46px;height:49px;border-radius:8px 8px 4px 4px;background:color-mix(in srgb,var(--person-accent) 20%,#f3f0e6);overflow:hidden;flex:none;}
+.campus-portrait-body{position:absolute;left:5px;right:5px;bottom:-13px;height:28px;background:var(--person-accent);border-radius:46% 46% 0 0;box-shadow:inset 0 2px #ffffff55;}
+.campus-portrait-head{position:absolute;left:13px;top:11px;width:20px;height:25px;background:#e4b88d;border-radius:46% 46% 45% 45%;box-shadow:inset 2px -1px #b1836666;}
+.campus-portrait-hair{position:absolute;left:11px;top:7px;width:24px;height:12px;background:#3a342f;border-radius:16px 14px 7px 8px;}
+.campus-member-name{font-weight:750;color:#36433c;font-size:9px;margin-top:3px;max-width:72px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;}
+.campus-person-status{position:absolute;right:5px;top:6px;width:7px;height:7px;border-radius:50%;background:#49a779;border:1px solid #f9f7ed;}
+.campus-member-more{align-self:center;font-size:11px;font-weight:700;border-radius:9px;padding:6px;background:#f7f4e9;color:#385449;}
+.campus-hud-bottom{position:absolute;bottom:15px;left:50%;transform:translateX(-50%);max-width:calc(100% - 24px);}
+.campus-controls{display:flex;align-items:center;gap:7px;border:1px solid rgba(226,237,217,.24);background:rgba(24,38,36,.92);border-radius:12px;padding:7px;white-space:nowrap;box-shadow:0 14px 38px rgba(12,25,24,.28);backdrop-filter:blur(15px);}
+.campus-hud-button{pointer-events:auto;display:flex;align-items:center;justify-content:center;gap:8px;border-radius:8px;border:1px solid #ffffff20;background:#334c45;color:#e8f4e9;font:700 11px system-ui;padding:8px 12px;cursor:pointer;transition:background .15s,transform .15s;}
+.campus-hud-button:hover{background:#47675a;transform:translateY(-1px)}
+.campus-hud-button:focus-visible{outline:2px solid #e8ca87;outline-offset:2px;}
+.campus-focus-toggle{background:#c7a779;color:#1e2924;border-color:#d6c39e;}
+.campus-focus-toggle:hover{background:#ead1a3;}
+.campus-controls-divider{width:1px;height:18px;background:#ffffff38;}
+.campus-walk-hint{font:750 10px system-ui;letter-spacing:.12em;color:#f5ead1;}
+.campus-walk-hint span{letter-spacing:0;color:#adc1b5;font-weight:550;}
+.campus-room-notice{font-size:11px;letter-spacing:0;color:#e2cfae;white-space:normal;text-align:center;max-width:190px;}
+.campus-guide{pointer-events:none;position:absolute;bottom:60px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;width:max-content;max-width:min(365px,90vw);padding:15px 18px;border-radius:13px;background:#1e302df2;border:1px solid #b7d3c04d;box-shadow:0 15px 50px #061811aa;font-size:12px;color:#d6e1d4;line-height:1.4;}
+.campus-guide strong{font-size:14px;color:#e4c691;margin-bottom:2px;}
+.campus-floating-map{position:absolute;right:16px;bottom:16px;width:177px;background:#203630ed;border:1px solid #d9e5d74d;padding:10px;border-radius:12px;box-shadow:0 11px 30px #0a241b61;}
+.campus-floating-map-header{display:flex;justify-content:space-between;font-weight:750;letter-spacing:.1em;font-size:9px;color:#e8e3cb;margin-bottom:7px;}
+.campus-floating-map-header span:last-child{color:#93d0a6;}
+.campus-floating-map .day7-minimap{margin:0;padding:0;background:transparent;border:0;border-radius:5px;min-height:0;}
+.campus-floating-map .day7-minimap svg{width:100%;height:auto;max-height:100px;}
+.campus-floating-map .day7-map-legend{font-size:9px;margin-top:3px;gap:8px;flex-wrap:wrap;}
+.app-shell.campus-v2 .day7-peer-tooltip{z-index:8;}
+.app-shell.campus-v2.immersive-mode .campus-member-rail{top:66px;}
+@media(max-width:900px){.campus-member-rail{max-width:50%;}.campus-member-card{width:57px;min-width:57px;height:71px;}.campus-person-portrait{width:34px;height:40px;}.campus-portrait-head{left:9px;top:9px;width:17px;height:21px;}.campus-portrait-hair{left:7px;width:21px;}.campus-member-name{max-width:52px;font-size:8px;}.campus-floating-map{width:142px;}.campus-hud-top{left:8px;right:8px;top:8px;}.campus-brand-chip{font-size:9px;}.campus-live-badge{font-size:9px;}.campus-member-rail{top:48px;right:8px;}}
+@media(max-width:590px){.campus-member-rail{display:none;}.campus-live-badge{padding:7px;}.campus-floating-map{display:none;}.campus-hud-bottom{bottom:7px;}.campus-controls{gap:4px;padding:5px;}.campus-hud-button{padding:7px;}.campus-walk-hint span{display:none;}.campus-brand-space{max-width:95px;}}
+
+/* =====================================================
+   Campus V3 — cinematic, non-stretched room experience
+   Scoped overrides: existing app/layout logic stays intact.
+   ===================================================== */
+.app-shell.campus-v2 {
+  --campus-ink: #23352e;
+  --campus-paper: #f7f4eb;
+  --campus-brass: #e7c58e;
+}
+.app-shell.campus-v2 .canvas-wrapper {
+  background: #d6d7cc;
+}
+/* The normal floorplan remains at the WORLD aspect ratio. */
+.app-shell.campus-v2:not(.immersive-mode) .canvas-wrapper canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 5 / 3;
+  outline: 0;
+  border-radius: 8px;
+}
+/* Focus mode uses an actual responsive drawing buffer measured by ResizeObserver. */
+.app-shell.campus-v2.immersive-mode .canvas-wrapper,
+.app-shell.campus-v2.immersive-mode .day7-canvas-wrap {
+  height: 100%;
+  min-height: 0;
+  background: #d6d7cc;
+}
+.app-shell.campus-v2.immersive-mode .canvas-wrapper canvas {
+  width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: auto;
+  border-radius: 0;
+  outline: none;
+}
+.app-shell.campus-v2 .campus-hud-top { z-index: 6; }
+.app-shell.campus-v2 .campus-brand-chip,
+.app-shell.campus-v2 .campus-live-badge {
+  background: rgba(24,41,36,.91);
+  border-color: rgba(225,242,220,.22);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(16,31,25,.18);
+  padding: 10px 13px;
+}
+.app-shell.campus-v2 .campus-member-rail {
+  top: 62px;
+  right: 14px;
+  gap: 6px;
+  max-width: 245px;
+  align-items: center;
+}
+.app-shell.campus-v2 .campus-member-card {
+  min-width: 66px;
+  width: 66px;
+  height: 68px;
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid rgba(255,255,255,.89);
+  background: rgba(248,246,239,.95);
+  box-shadow: 0 8px 25px rgba(25,38,32,.13);
+}
+.app-shell.campus-v2 .campus-member-card.is-self {
+  border-color: #b1d6bb;
+  background: #eaf1e9;
+}
+.app-shell.campus-v2 .campus-person-portrait { width: 34px; height: 39px; }
+.app-shell.campus-v2 .campus-portrait-head { left: 9px; top: 9px; width: 17px; height: 21px; }
+.app-shell.campus-v2 .campus-portrait-hair { left: 7px; top: 6px; width: 21px; }
+.app-shell.campus-v2 .campus-member-name { max-width: 58px; font-size: 9px; }
+.app-shell.campus-v2 .campus-member-more {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  background: #263e35;
+  color: #e8f0e4;
+  padding: 0 7px;
+  font-size: 11px;
+}
+/* In-room view is room-first: omit large portrait cards that cover the furniture. */
+.app-shell.campus-v2.immersive-mode .campus-member-rail { display: none; }
+.app-shell.campus-v2.immersive-mode .campus-brand-chip {
+  border-color: rgba(233,201,142,.47);
+}
+.app-shell.campus-v2 .campus-room-inspector {
+  position: absolute;
+  top: 50%;
+  right: 22px;
+  transform: translateY(-54%);
+  width: 212px;
+  border-radius: 18px;
+  background: rgba(27,45,38,.94);
+  border: 1px solid rgba(246,235,205,.21);
+  color: var(--campus-paper);
+  padding: 20px 19px;
+  box-shadow: 0 15px 50px rgba(18,40,28,.23);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.app-shell.campus-v2 .campus-inspector-kicker {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .2em;
+  color: #dfbf84;
+}
+.app-shell.campus-v2 .campus-room-inspector h3 {
+  font-size: 21px;
+  line-height: 1.13;
+  letter-spacing: -.025em;
+  text-transform: capitalize;
+  margin: 12px 0 9px;
+}
+.app-shell.campus-v2 .campus-room-inspector p {
+  margin: 0;
+  color: #acc5b4;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.app-shell.campus-v2 .campus-inspector-divider {
+  border-top: 1px solid rgba(226,241,216,.16);
+  margin: 19px 0 14px;
+}
+.app-shell.campus-v2 .campus-inspector-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  margin: 12px 0;
+  color: #c3d4c7;
+}
+.app-shell.campus-v2 .campus-inspector-stat strong {
+  color: #fff6dc;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+.app-shell.campus-v2 .campus-inspector-foot {
+  border-top: 1px solid rgba(226,241,216,.16);
+  padding-top: 14px;
+  margin-top: 13px;
+  color: #d8b880;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .07em;
+}
+.app-shell.campus-v2 .campus-controls {
+  border-radius: 16px;
+  padding: 8px;
+  background: rgba(24,43,35,.94);
+  box-shadow: 0 10px 32px rgba(9,23,20,.22);
+}
+.app-shell.campus-v2 .campus-hud-button { border-radius: 9px; }
+.app-shell.campus-v2.immersive-mode .campus-floating-map {
+  right: 22px;
+  bottom: 20px;
+  width: 180px;
+  background: rgba(27,46,38,.94);
+}
+/* Smaller windows prioritize the actual world/room and controls. */
+@media(max-width:1150px) {
+  .app-shell.campus-v2 .campus-room-inspector { width: 168px; right: 12px; padding: 15px 13px; }
+  .app-shell.campus-v2 .campus-room-inspector h3 { font-size: 16px; }
+}
+@media(max-width:880px) {
+  .app-shell.campus-v2 .campus-room-inspector { display: none; }
+  .app-shell.campus-v2 .campus-member-rail { max-width: 195px; }
+  .app-shell.campus-v2 .campus-member-card { width: 53px; min-width: 53px; }
+  .app-shell.campus-v2 .campus-member-more { font-size: 10px; }
+}
+@media(max-width:600px) {
+  .app-shell.campus-v2 .campus-member-rail { display: none; }
+  .app-shell.campus-v2.immersive-mode .campus-floating-map { display:none; }
+  .app-shell.campus-v2 .campus-brand-chip { max-width: 65%; }
+  .app-shell.campus-v2 .campus-brand-name { display: none; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .app-shell.campus-v2 .campus-hud-button { transition: none; }
+}
