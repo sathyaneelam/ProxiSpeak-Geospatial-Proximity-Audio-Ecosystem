@@ -92,8 +92,8 @@ async function createOrUpdateOffice({
     code: code.toLowerCase().trim(),
     dimensions,
     proximityRadius,
-    zones,
-    obstacles,
+    zones: zones && zones.length > 0 ? zones : DEFAULT_ROOM_ZONES,
+    obstacles: obstacles && obstacles.length > 0 ? obstacles : DEFAULT_OBSTACLES,
     settings
   };
 

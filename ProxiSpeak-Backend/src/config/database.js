@@ -20,10 +20,12 @@ async function connectDB(uri = process.env.MONGODB_URI, options = {}) {
     throw new Error(errorMsg);
   }
 
+  const { exitOnError = true, ...mongooseOptions } = options;
+
   const defaultOptions = {
     autoIndex: true, // Auto-build 2D planar indexes in development/test
-    serverSelectionTimeoutMS: options.serverSelectionTimeoutMS || 5000,
-    ...options
+    serverSelectionTimeoutMS: 5000,
+    ...mongooseOptions
   };
 
   try {
@@ -32,7 +34,7 @@ async function connectDB(uri = process.env.MONGODB_URI, options = {}) {
     return mongoose.connection;
   } catch (error) {
     console.error("MongoDB connection failed:", error.message);
-    if (process.env.NODE_ENV !== "test" && options.exitOnError !== false) {
+    if (process.env.NODE_ENV !== "test" && exitOnError !== false) {
       process.exit(1);
     }
     throw error;

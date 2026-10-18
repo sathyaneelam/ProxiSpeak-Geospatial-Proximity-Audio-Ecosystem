@@ -22,6 +22,9 @@ async function startServer() {
   if (process.env.MONGODB_URI) {
     try {
       await connectDB();
+      const { seedDefaultOffice } = require("./services/officeService");
+      await seedDefaultOffice();
+      console.log("Default office 'office-01' seeded with furniture obstacles.");
     } catch (err) {
       console.warn("MongoDB connection warning:", err.message);
     }

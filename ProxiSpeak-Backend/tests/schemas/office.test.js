@@ -105,4 +105,32 @@ describe('Office Schema & Layout Validation', () => {
       (err) => err.errors && Boolean(err.errors['obstacles.0.type'])
     );
   });
+
+  it('should validate default office with complete set of furniture obstacles', async () => {
+    const { DEFAULT_OBSTACLES, DEFAULT_ROOM_ZONES } = require('../../src/services/officeService');
+    const office = new Office({
+      name: 'ProxiSpeak Main Office',
+      code: 'office-01',
+      dimensions: { width: 1000, height: 600 },
+      proximityRadius: 100,
+      zones: DEFAULT_ROOM_ZONES,
+      obstacles: DEFAULT_OBSTACLES
+    });
+
+    await office.validate();
+    assert.strictEqual(office.obstacles.length, 14, 'Default office must seed 14 furniture obstacles');
+
+    const obstacleTypes = office.obstacles.map((o) => o.type);
+    assert.ok(obstacleTypes.filter((t) => t === 'desk').length >= 8, 'Must include at least 8 desks');
+    assert.ok(obstacleTypes.includes('table'), 'Must include meeting table');
+    assert.ok(obstacleTypes.includes('sofa'), 'Must include lounge sofas');
+    assert.ok(obstacleTypes.includes('coffee'), 'Must include coffee table');
+    assert.ok(obstacleTypes.includes('counter'), 'Must include counters');
+
+    for (const obs of office.obstacles) {
+      assert.ok(obs.x + obs.w <= 1000, `Obstacle ${obs.label} exceeds office width`);
+      assert.ok(obs.y + obs.h <= 600, `Obstacle ${obs.label} exceeds office height`);
+      assert.strictEqual(obs.isCollidable, true, 'Obstacles should be collidable by default');
+    }
+  });
 });

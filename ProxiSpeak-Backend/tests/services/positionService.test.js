@@ -147,20 +147,56 @@ describe('Position Service & Contract Validation', () => {
       assert.ok(zoneTitles.includes('LOUNGE'));
     });
 
+    it('should calculate audio volume using agreed smoothstep formula: 1 - (3t^2 - 2t^3)', () => {
+      // t = clamp(d/radius, 0, 1); gain = 1 - (3t^2 - 2t^3)
+      const R = 100;
+      assert.strictEqual(calculateAudioVolume(0, R), 1.0, 'd=0 => 1.0');
+      assert.strictEqual(calculateAudioVolume(25, R), 0.8438, 'd=25 => 0.8438');
+      assert.strictEqual(calculateAudioVolume(50, R), 0.5, 'd=50 => 0.5');
+      assert.strictEqual(calculateAudioVolume(60, R), 0.352, 'd=60 => 0.352');
+      assert.strictEqual(calculateAudioVolume(75, R), 0.1563, 'd=75 => 0.1563');
+      assert.strictEqual(calculateAudioVolume(100, R), 0.0, 'd=100 => 0.0');
+      assert.strictEqual(calculateAudioVolume(150, R), 0.0, 'd>100 => 0.0');
+    });
+
     it('should provide default furniture obstacles with valid bounds and types', () => {
       assert.ok(Array.isArray(DEFAULT_OBSTACLES));
-      assert.ok(DEFAULT_OBSTACLES.length >= 10);
+      assert.strictEqual(DEFAULT_OBSTACLES.length, 14, 'Must seed exactly 14 default furniture obstacles');
+
+      const expectedLabels = [
+        'Desk A1', 'Desk A2', 'Desk A3', 'Desk A4',
+        'Desk B1', 'Desk B2', 'Desk B3', 'Desk B4',
+        'Conference Table', 'Sofa North', 'Sofa East', 'Coffee Table',
+        'Coffee Counter', 'Sideboard'
+      ];
 
       for (const obstacle of DEFAULT_OBSTACLES) {
         assert.ok(typeof obstacle.x === 'number' && obstacle.x >= 0);
         assert.ok(typeof obstacle.y === 'number' && obstacle.y >= 0);
         assert.ok(typeof obstacle.w === 'number' && obstacle.w > 0);
         assert.ok(typeof obstacle.h === 'number' && obstacle.h > 0);
+        assert.ok(obstacle.x + obstacle.w <= 1000, `Obstacle ${obstacle.label} exceeds width 1000`);
+        assert.ok(obstacle.y + obstacle.h <= 600, `Obstacle ${obstacle.label} exceeds height 600`);
         assert.ok(
           ['desk', 'table', 'sofa', 'coffee', 'counter', 'wall', 'custom'].includes(obstacle.type),
           `Invalid type: ${obstacle.type}`
         );
+        assert.ok(expectedLabels.includes(obstacle.label), `Unexpected obstacle label: ${obstacle.label}`);
       }
+    });
+
+    it('should benchmark proximity evaluation for 60 users against 20ms target SLA', () => {
+      const { generate60TestUsers } = require('../../scripts/seed');
+      const { runMemoryNearbyUsersBenchmark } = require('../../scripts/benchmark');
+
+      const testUsers = generate60TestUsers('office-01');
+      assert.strictEqual(testUsers.length, 60, 'Should seed exactly 60 test users');
+
+      const pivot = [160, 160];
+      const stats = runMemoryNearbyUsersBenchmark(testUsers, pivot, 100, 200);
+
+      assert.ok(stats.p50 < 20.0, `p50 (${stats.p50}ms) must be under 20ms SLA`);
+      assert.ok(stats.p95 < 20.0, `p95 (${stats.p95}ms) must be under 20ms SLA`);
     });
   });
 });
