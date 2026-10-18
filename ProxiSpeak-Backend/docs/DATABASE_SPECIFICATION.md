@@ -53,11 +53,15 @@ Defines the virtual office room, boundaries, audio threshold, zones, and obstacl
 ### 2.3 LivePosition Schema (`src/models/LivePosition.js`)
 Tracks the real-time position of each active user in a 2D virtual office.
 - `userId` (ObjectId, ref: `'User'`, required, unique) - 1:1 user live position mapping
-- `officeId` (ObjectId, ref: `'Office'`, required)
+- `officeId` (ObjectId, ref: `'Office'`, required, indexed) - Indexed for office-wide presence sync
 - `location` ([Number], length 2: `[x, y]`, required, finite numbers)
 - `socketId` (String, indexed) - Socket.io connection ID for fast disconnect cleanup
 - `lastUpdated` (Date, default: `Date.now`)
-- Compound 2D index: `{ officeId: 1, location: '2d' }`
+- Indexes:
+  - `{ officeId: 1, location: '2d' }` - Compound planar index for fast spatial circular queries
+  - `{ userId: 1 }` (unique) - Enforces single active position per user and fast avatar lookups
+  - `{ officeId: 1 }` - Fast B-tree index for `getOfficePositions` initial room synchronization
+  - `{ socketId: 1 }` - Fast socket disconnect cleanup
 
 ---
 

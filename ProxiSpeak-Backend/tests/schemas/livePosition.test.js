@@ -80,4 +80,24 @@ describe('LivePosition Schema & Index Validation', () => {
       'Schema must define compound planar index { officeId: 1, location: "2d" }'
     );
   });
+
+  it('should have required indexes configured for officeId and unique userId', () => {
+    const indexes = LivePosition.schema.indexes();
+
+    const hasUserIdUniqueIndex = indexes.some(([fields, options]) => {
+      return fields.userId === 1 && options && options.unique === true;
+    });
+    assert.ok(
+      hasUserIdUniqueIndex,
+      'Schema must define unique index on { userId: 1 } for 1:1 user live position mapping'
+    );
+
+    const hasOfficeIdIndex = indexes.some(([fields]) => {
+      return fields.officeId === 1 && Object.keys(fields).length === 1;
+    });
+    assert.ok(
+      hasOfficeIdIndex,
+      'Schema must define single-field index on { officeId: 1 } for office-level avatar queries'
+    );
+  });
 });

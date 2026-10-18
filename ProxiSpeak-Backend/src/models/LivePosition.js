@@ -24,7 +24,8 @@ const livePositionSchema = new mongoose.Schema(
         officeId: {
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Office',
-            required: true
+            required: true,
+            index: true
         },
         location: {
             type: [Number], // [x, y] in planar pixels
