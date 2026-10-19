@@ -184,6 +184,27 @@ export class SpatialAudioGraph {
    * Retrieves current spatial audio metrics for a peer.
    * @param {string} peerId
    */
+  /**
+   * Mutes or unmutes all connected remote peers.
+   * @param {boolean} muted
+   */
+  setMuted(muted) {
+    this.isMuted = Boolean(muted);
+
+    const context = this.getAudioContext();
+
+    for (const peerData of this.peerNodes.values()) {
+      const targetGain = this.isMuted ? 0 : (peerData.lastGain ?? 0);
+
+      peerData.gainNode.gain.setTargetAtTime(
+        targetGain,
+        context.currentTime,
+        this.smoothingTimeConstant
+      );
+
+      peerData.lastGain = targetGain;
+    }
+  }
   getPeerSpatialMetrics(peerId) {
     const peerData = this.peerNodes.get(peerId);
     if (!peerData) return null;
