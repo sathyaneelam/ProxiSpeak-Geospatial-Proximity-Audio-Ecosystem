@@ -29,7 +29,7 @@ const livePositionSchema = new mongoose.Schema(
         },
         location: {
             type: [Number], // [x, y] in planar pixels
-            required: true,
+            required: [true, 'location is required'],
             validate: {
                 validator: function (val) {
                     return (
@@ -38,12 +38,14 @@ const livePositionSchema = new mongoose.Schema(
                         typeof val[0] === 'number' &&
                         !isNaN(val[0]) &&
                         isFinite(val[0]) &&
+                        val[0] >= 0 &&
                         typeof val[1] === 'number' &&
                         !isNaN(val[1]) &&
-                        isFinite(val[1])
+                        isFinite(val[1]) &&
+                        val[1] >= 0
                     );
                 },
-                message: 'location must be an array of two finite numbers: [x, y]'
+                message: 'location must be an array of two non-negative finite numbers: [x, y]'
             }
         },
         socketId: {

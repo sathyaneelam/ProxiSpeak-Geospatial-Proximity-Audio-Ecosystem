@@ -54,7 +54,7 @@ Defines the virtual office room, boundaries, audio threshold, zones, and obstacl
 Tracks the real-time position of each active user in a 2D virtual office.
 - `userId` (ObjectId, ref: `'User'`, required, unique) - 1:1 user live position mapping
 - `officeId` (ObjectId, ref: `'Office'`, required, indexed) - Indexed for office-wide presence sync
-- `location` ([Number], length 2: `[x, y]`, required, finite numbers)
+- `location` ([Number], length 2: `[x, y]`, required, non-negative finite numbers: $x \ge 0, y \ge 0$)
 - `socketId` (String, indexed) - Socket.io connection ID for fast disconnect cleanup
 - `lastUpdated` (Date, default: `Date.now`)
 - Indexes:
@@ -62,6 +62,10 @@ Tracks the real-time position of each active user in a 2D virtual office.
   - `{ userId: 1 }` (unique) - Enforces single active position per user and fast avatar lookups
   - `{ officeId: 1 }` - Fast B-tree index for `getOfficePositions` initial room synchronization
   - `{ socketId: 1 }` - Fast socket disconnect cleanup
+
+> **Coordinate Validation Architecture:**
+> - **Schema / Database Layer:** Enforces structural validity (2-element array, finite numbers, non-null/required) and planar non-negativity ($x \ge 0, y \ge 0$). Because $(0, 0)$ is the canvas origin, negative coordinates are structurally invalid in 2D screen space.
+> - **Service / Signaling Layer:** Enforces office-specific dynamic canvas boundaries ($x \le \text{office.dimensions.width}$, $y \le \text{office.dimensions.height}$). Because offices support configurable dimensions (`dimensions.width` and `height` in `Office.js`), hardcoding canvas dimensions into the `LivePosition` schema would break multi-sized rooms and incur cross-collection query overhead on high-frequency avatar updates.
 
 ---
 
@@ -243,6 +247,6 @@ npm test
 The test suite utilizes the Node.js native test runner (`node --test`) with 27 automated tests across 9 test suites:
 - `tests/schemas/user.test.js`: Validations, defaults, email normalization
 - `tests/schemas/office.test.js`: Default bounds, 100px radius, zones & obstacle validation
-- `tests/schemas/livePosition.test.js`: 2D coordinate array validation, compound `{ officeId: 1, location: '2d' }` index configuration
+- `tests/schemas/livePosition.test.js`: 2D coordinate array and non-negative boundary validation, compound `{ officeId: 1, location: '2d' }` index, and `{ officeId: 1 }` presence index configuration
 - `tests/spatial/planarProximity.test.js`: Euclidean geometry, spherical GeoJSON failure proof, audio volume attenuation
 - `tests/services/positionService.test.js`: Coordinate checks, proximity radius filtering, backend event contract shapes

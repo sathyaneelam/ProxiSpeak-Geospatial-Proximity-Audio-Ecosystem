@@ -45,6 +45,40 @@ describe('LivePosition Schema & Index Validation', () => {
     );
   });
 
+  it('should fail validation when location is missing, null, or empty', async () => {
+    const missingLocation = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId
+    });
+
+    await assert.rejects(
+      async () => await missingLocation.validate(),
+      (err) => err.errors && Boolean(err.errors.location)
+    );
+
+    const nullLocation = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: null
+    });
+
+    await assert.rejects(
+      async () => await nullLocation.validate(),
+      (err) => err.errors && Boolean(err.errors.location)
+    );
+
+    const emptyLocation = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: []
+    });
+
+    await assert.rejects(
+      async () => await emptyLocation.validate(),
+      (err) => err.errors && Boolean(err.errors.location)
+    );
+  });
+
   it('should reject coordinates that are not arrays or do not have exactly 2 valid numbers', async () => {
     const invalidTestCases = [
       [100],
@@ -67,6 +101,39 @@ describe('LivePosition Schema & Index Validation', () => {
         `Expected validation error for invalid location: ${JSON.stringify(invalidLocation)}`
       );
     }
+  });
+
+  it('should reject negative coordinates outside the planar canvas domain', async () => {
+    const negativeCoordinates = [
+      [-10, 200],
+      [100, -50],
+      [-1, -1]
+    ];
+
+    for (const invalidLocation of negativeCoordinates) {
+      const position = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: invalidLocation
+      });
+
+      await assert.rejects(
+        async () => await position.validate(),
+        (err) => err.errors && Boolean(err.errors.location),
+        `Expected validation error for negative location: ${JSON.stringify(invalidLocation)}`
+      );
+    }
+  });
+
+  it('should accept canvas origin [0, 0] as valid coordinates', async () => {
+    const position = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: [0, 0]
+    });
+
+    await position.validate();
+    assert.deepStrictEqual(position.location, [0, 0]);
   });
 
   it('should have compound 2D planar index configured on { officeId: 1, location: "2d" }', () => {
