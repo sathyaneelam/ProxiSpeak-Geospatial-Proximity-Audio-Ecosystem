@@ -1,11 +1,9 @@
 const mongoose = require("mongoose");
 const Position = require("../models/Position");
 const User = require("../models/User");
-
 async function savePosition(req, res, next) {
   try {
     const { userId, x, y } = req.body;
-
     // Validate the user ID
     if (!mongoose.isValidObjectId(userId)) {
       return res.status(400).json({
@@ -13,7 +11,6 @@ async function savePosition(req, res, next) {
         message: "A valid userId is required",
       });
     }
-
     // Validate coordinates
     if (
       typeof x !== "number" ||
@@ -26,7 +23,6 @@ async function savePosition(req, res, next) {
         message: "x and y must be valid numbers",
       });
     }
-
     // Check whether the user exists
     const userExists = await User.findById(userId);
 
@@ -36,8 +32,7 @@ async function savePosition(req, res, next) {
         message: "User not found",
       });
     }
-
-    // Create a position or update the existing one
+    
     const position = await Position.findOneAndUpdate(
       { userId },
       { x, y },
@@ -48,7 +43,6 @@ async function savePosition(req, res, next) {
         setDefaultsOnInsert: true,
       }
     );
-
     return res.status(200).json({
       status: "success",
       message: "Avatar position saved successfully",
@@ -58,7 +52,6 @@ async function savePosition(req, res, next) {
     next(error);
   }
 }
-
 async function getPositionByUserId(req, res, next) {
   try {
     const { userId } = req.params;

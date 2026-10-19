@@ -1,23 +1,18 @@
 const officeManager = require("../services/officeManager");
 const positionSyncService = require("../services/positionSyncService");
 const { STALE_POSITION_TIMEOUT_MS } = require("../config/constants");
-
 let staleInterval = null;
-
 function registerDisconnectHandler(io, socket) {
   socket.on("disconnect", async (reason) => {
     console.log(`User disconnected: ${socket.id} (${reason})`);
-
     try {
       const { peer, affectedProximityPeers } = officeManager.leaveOffice(socket.id);
       if (!peer) return;
-
       // Notify remaining peers in the office
       socket.to(`office:${peer.officeId}`).emit("user:left", {
         socketId: socket.id,
         userId: peer.userId,
       });
-
       // Tear down active proximity connections for peers in earshot
       for (const affected of affectedProximityPeers) {
         io.to(affected.socketId).emit("proximity:leave", {
@@ -26,7 +21,6 @@ function registerDisconnectHandler(io, socket) {
           reason: "disconnected",
         });
       }
-
       // Sync final position and clear socketId in MongoDB
       await positionSyncService.savePositionImmediately(peer.userId, peer.x, peer.y);
       await positionSyncService.updateUserSocketId(peer.userId, null);
@@ -35,7 +29,6 @@ function registerDisconnectHandler(io, socket) {
     }
   });
 }
-
 /**
  * Starts a background timer that sweeps for stale/inactive peers.
  * @param {object} io - Socket.io server instance
