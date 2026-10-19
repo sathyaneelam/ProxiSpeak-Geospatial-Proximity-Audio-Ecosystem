@@ -221,3 +221,49 @@
 @media(prefers-reduced-motion:reduce) {
   .app-shell.campus-v2 .campus-hud-button { transition: none; }
 }
+
+/* Campus V4: actual photoreal floorplan artwork, no procedural game tiles. */
+.app-shell.campus-v2 .canvas-wrapper{background:#0d1115}
+.app-shell.campus-v2.immersive-mode .canvas-wrapper{background:#0d1115}
+.app-shell.campus-v2 .canvas-wrapper canvas{image-rendering:auto}
+.app-shell.campus-v2 .campus-member-rail{max-width:210px}
+.app-shell.campus-v2 .campus-hud-top{pointer-events:none}
+@media(max-width:800px){.app-shell.campus-v2 .campus-member-rail{display:none}}
+
+/* Real Office V4.1: give the map more space in the dashboard (no artwork distortion). */
+@media (min-width: 901px) {
+  .app-shell.campus-v2:not(.immersive-mode) .sidebar {
+    width: 204px;
+    padding-left: 13px;
+    padding-right: 13px;
+  }
+  .app-shell.campus-v2:not(.immersive-mode) .main-content {
+    max-width: none;
+    padding: 16px 18px 26px;
+  }
+  .app-shell.campus-v2:not(.immersive-mode) .topbar { margin-bottom: 15px; }
+  .app-shell.campus-v2:not(.immersive-mode) .office-toolbar { padding: 13px 19px; }
+  .app-shell.campus-v2:not(.immersive-mode) .canvas-wrapper { padding: 3px; }
+}
+/* Smaller colleague cards keep more of the map itself visible. */
+.app-shell.campus-v2:not(.immersive-mode) .campus-member-rail {
+  top: 51px;
+  right: 10px;
+  max-width: 158px;
+  gap: 4px;
+}
+.app-shell.campus-v2:not(.immersive-mode) .campus-member-card {
+  width: 53px;
+  min-width: 53px;
+  height: 61px;
+  padding: 3px;
+}
+.app-shell.campus-v2:not(.immersive-mode) .campus-person-portrait { width: 28px; height: 34px; }
+.app-shell.campus-v2:not(.immersive-mode) .campus-member-name { max-width: 49px; font-size: 8px; }
+
+/* V5 spacious campus: a larger truly explorable 2000×1200 world. */
+.app-shell.campus-v2:not(.immersive-mode) .canvas-wrapper canvas { aspect-ratio: 5 / 3; }
+.app-shell.campus-v2 .campus-member-rail { max-width: 215px; }
+.app-shell.campus-v2 .campus-room-inspector { max-width: min(235px, 30vw); }
+.app-shell.campus-v2 .campus-hud-bottom { z-index: 7; }
+.app-shell.campus-v2 .day7-minimap svg { aspect-ratio: 5 / 3; }

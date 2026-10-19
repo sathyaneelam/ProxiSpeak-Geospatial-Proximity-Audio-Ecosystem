@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import './App.css'
 import './CampusExperience.css'
+import officeFloorplan from './assets/office-floorplan.png'
 
 import { useSocket } from './hooks/useSocket'
 import { useProximityAudio } from './audio/useProximityAudio'
@@ -9,15 +10,17 @@ import { createRoomCamera, getCameraTarget, updateRoomCamera, applyRoomCamera, s
 
 
 
-const WIDTH = 1000
+const WIDTH = 2000
 
-const HEIGHT = 600
+const HEIGHT = 1200
 
-const SPEED = 220
+const SPEED = 260
 
 const RADIUS = 100
 
-const PLAYER_RADIUS = 18
+// Authentic, larger 2000×1200 building with constant-sized player footprint.
+// The 100px server proximity radius does NOT change.
+const PLAYER_RADIUS = 13
 
 const OFFICE_ID = 'office-01'
 
@@ -49,143 +52,61 @@ function readProfile() {
 
 
 
-const roomZones = [
-
-  {
-
-    x: 45,
-
-    y: 45,
-
-    w: 265,
-
-    h: 205,
-
-    title: 'WORKSTATION A',
-
-    subtitle: 'Focus desks + quiet work',
-
-    fill: '#c8b99f',
-
-    stroke: '#8a7965',
-
-  },
-
-  {
-
-    x: 690,
-
-    y: 45,
-
-    w: 265,
-
-    h: 205,
-
-    title: 'WORKSTATION B',
-
-    subtitle: 'Team workspace',
-
-    fill: '#c8b99f',
-
-    stroke: '#8a7965',
-
-  },
-
-  {
-
-    x: 45,
-
-    y: 350,
-
-    w: 300,
-
-    h: 205,
-
-    title: 'MEETING AREA',
-
-    subtitle: 'Collaborative discussion zone',
-
-    fill: '#a7b1a9',
-
-    stroke: '#697d72',
-
-  },
-
-  {
-
-    x: 650,
-
-    y: 350,
-
-    w: 305,
-
-    h: 205,
-
-    title: 'LOUNGE',
-
-    subtitle: 'Relax + informal talks',
-
-    fill: '#afbaac',
-
-    stroke: '#738678',
-
-  },
-
+// Each original artwork coordinate represents 2 world units in the expanded building.
+// The image now occupies x=200..1800, y=0..1200 in a true 2000×1200 world.
+// Keep authored image-aligned room definitions in source-space, then map precisely.
+const referenceRoomZones = [
+  { title: 'FOCUS NORTH', subtitle: 'Private quiet workspace', x: 162, y: 43, w: 72, h: 80 },
+  { title: 'MEETING NORTH', subtitle: 'Six-person meeting room', x: 249, y: 44, w: 120, h: 79 },
+  { title: 'CAFETERIA', subtitle: 'Food and coffee bar', x: 383, y: 46, w: 211, h: 77 },
+  { title: 'LOUNGE NORTH', subtitle: 'Relaxed team lounge', x: 611, y: 43, w: 121, h: 78 },
+  { title: 'QUIET ROOM', subtitle: 'Private relaxation space', x: 750, y: 44, w: 75, h: 79 },
+  { title: 'PHONE BOOTHS', subtitle: 'Private calls', x: 164, y: 132, w: 69, h: 58 },
+  { title: 'COLLAB WEST', subtitle: 'Team collaboration', x: 164, y: 199, w: 69, h: 67 },
+  { title: 'FOCUS WEST', subtitle: 'Quiet solo work', x: 164, y: 277, w: 69, h: 63 },
+  { title: 'MEETING EAST', subtitle: 'Small-group conference', x: 755, y: 137, w: 70, h: 72 },
+  { title: 'COLLAB EAST', subtitle: 'Group discussion area', x: 755, y: 217, w: 70, h: 59 },
+  { title: 'FOCUS EAST', subtitle: 'Independent work', x: 755, y: 285, w: 70, h: 55 },
+  { title: 'WORKSTATIONS WEST', subtitle: 'Shared workstations', x: 261, y: 194, w: 122, h: 119 },
+  { title: 'WORKSTATIONS EAST', subtitle: 'Shared workstations', x: 600, y: 194, w: 111, h: 119 },
+  { title: 'MEETING SOUTH', subtitle: 'Large boardroom', x: 163, y: 366, w: 141, h: 131 },
+  { title: 'LOUNGE SOUTH', subtitle: 'Breakout lounge', x: 328, y: 366, w: 100, h: 132 },
+  { title: 'RECEPTION', subtitle: 'Welcome desk and entry', x: 439, y: 378, w: 132, h: 138 },
+  { title: 'KITCHEN & COFFEE', subtitle: 'Casual coffee chats', x: 586, y: 367, w: 108, h: 130 },
+  { title: 'TRAINING ROOM', subtitle: 'Team workshops', x: 710, y: 365, w: 113, h: 132 },
 ]
 
-
-
-const obstacles = [
-
-  // Workstation A desks
-
-  { x: 78, y: 92, w: 72, h: 28, type: 'desk' },
-
-  { x: 172, y: 92, w: 72, h: 28, type: 'desk' },
-
-  { x: 78, y: 160, w: 72, h: 28, type: 'desk' },
-
-  { x: 172, y: 160, w: 72, h: 28, type: 'desk' },
-
-
-
-  // Workstation B desks
-
-  { x: 724, y: 92, w: 72, h: 28, type: 'desk' },
-
-  { x: 818, y: 92, w: 72, h: 28, type: 'desk' },
-
-  { x: 724, y: 160, w: 72, h: 28, type: 'desk' },
-
-  { x: 818, y: 160, w: 72, h: 28, type: 'desk' },
-
-
-
-  // Meeting room table
-
-  { x: 130, y: 412, w: 130, h: 58, type: 'table' },
-
-
-
-  // Lounge sofa + table
-
-  { x: 700, y: 420, w: 95, h: 34, type: 'sofa' },
-
-  { x: 808, y: 420, w: 95, h: 34, type: 'sofa' },
-
-  { x: 755, y: 485, w: 92, h: 34, type: 'coffee' },
-
-
-
-  // Decorative side tables / counters
-
-  { x: 445, y: 72, w: 110, h: 24, type: 'counter' },
-
-  { x: 438, y: 520, w: 126, h: 20, type: 'counter' },
-
+// Furniture approximations in logical units, mapped against artwork.
+// These block walking through large desks and tables; visual pixels themselves
+// cannot give us automatic collision, so doorways/walls need field validation.
+const referenceObstacles = [
+  { x: 285, y: 211, w: 19, h: 66, type: 'desk-bank' },
+  { x: 342, y: 211, w: 18, h: 66, type: 'desk-bank' },
+  { x: 624, y: 211, w: 19, h: 66, type: 'desk-bank' },
+  { x: 682, y: 211, w: 18, h: 66, type: 'desk-bank' },
+  { x: 460, y: 202, w: 77, h: 58, type: 'sofa-zone' },
+  { x: 280, y: 71, w: 60, h: 32, type: 'conference' },
+  { x: 450, y: 81, w: 101, h: 25, type: 'cafe-counter' },
+  { x: 658, y: 68, w: 54, h: 45, type: 'sofa' },
+  { x: 185, y: 230, w: 27, h: 21, type: 'collab' },
+  { x: 786, y: 157, w: 22, h: 26, type: 'meeting' },
+  { x: 785, y: 238, w: 20, h: 23, type: 'collab' },
+  { x: 187, y: 409, w: 94, h: 52, type: 'meeting' },
+  { x: 338, y: 401, w: 73, h: 65, type: 'lounge' },
+  { x: 477, y: 416, w: 46, h: 32, type: 'welcome' },
+  { x: 735, y: 416, w: 80, h: 49, type: 'training' },
 ]
 
-
+// Doubling the world footprint creates real additional navigation distance.
+// Unlike CSS zoom, avatars/proximity are NOT enlarged with the furniture.
+const upscaleArea = (area) => ({
+  ...area,
+  x: area.x * 2, y: area.y * 2,
+  w: area.w * 2, h: area.h * 2,
+})
+const roomZones = referenceRoomZones.map(upscaleArea)
+const obstacles = referenceObstacles.map(upscaleArea)
+const ARTWORK = { x: 200, y: 0, w: 1600, h: 1200 }
 
 function clamp(value, min, max) {
 
@@ -216,31 +137,10 @@ function circleIntersectsRect(cx, cy, radius, rect) {
 
 
 function isBlocked(x, y) {
-
-  if (
-
-    x - PLAYER_RADIUS < 10 ||
-
-    x + PLAYER_RADIUS > WIDTH - 10 ||
-
-    y - PLAYER_RADIUS < 10 ||
-
-    y + PLAYER_RADIUS > HEIGHT - 10
-
-  ) {
-
-    return true
-
-  }
-
-
-
-  return obstacles.some((rect) =>
-
-    circleIntersectsRect(x, y, PLAYER_RADIUS, rect)
-
-  )
-
+  // Prevent wandering into the black border outside the building artwork.
+  // Old authored walkable boundary × 2. The surrounding landscape is visual only.
+  if (x < 332 || x > 1666 || y < 96 || y > 1092) return true
+  return obstacles.some((rect) => circleIntersectsRect(x, y, PLAYER_RADIUS, rect))
 }
 
 
@@ -257,18 +157,20 @@ function MiniMap({ position, members, selfColor, showPeers }) {
   return (
     <div className="day7-minimap" role="img" aria-label={`Office mini map. Your position: ${position.x}, ${position.y}. ${showPeers ? members.length : 0} other members visible.`}>
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-        <rect width={WIDTH} height={HEIGHT} rx="22" fill="#e6dfd2" />
-        <rect x="345" y="55" width="310" height="490" rx="8" fill="#d1d0c5" stroke="#a6a79a" strokeWidth="3" />
-        {roomZones.map((zone) => (
-          <g key={zone.title}>
-            <rect x={zone.x} y={zone.y} width={zone.w} height={zone.h} rx="6" fill={zone.fill} stroke={zone.stroke} strokeWidth="4" />
-            <text x={zone.x + zone.w / 2} y={zone.y + zone.h / 2} fill="#3f4943" fontSize="18" fontWeight="600" textAnchor="middle">{zone.title.replace('WORKSTATION', 'DESK')}</text>
-          </g>
-        ))}
+        <rect width={WIDTH} height={HEIGHT} fill="#10151a" />
+        <image href={officeFloorplan} x={ARTWORK.x} y={ARTWORK.y} width={ARTWORK.w} height={ARTWORK.h} preserveAspectRatio="xMidYMid meet" />
+        {/* Viewport footprint follows your location, not a fixed screenshot. */}
+        <rect
+          x={clamp(position.x - 510, 0, WIDTH - 1020)}
+          y={clamp(position.y - 310, 0, HEIGHT - 620)}
+          width="1020" height="620" rx="18"
+          fill="rgba(255,255,255,0.025)" stroke="rgba(255,255,255,0.95)"
+          strokeWidth="5" strokeDasharray="17 12" pointerEvents="none"
+        />
         {showPeers && members.map((member) => (
-          <circle key={member.id} cx={member.x} cy={member.y} r="16" fill={member.color} stroke="#ffffff" strokeWidth="4" />
+          <circle key={member.id} cx={member.x} cy={member.y} r="7" fill={member.color} stroke="#fff" strokeWidth="3" />
         ))}
-        <circle cx={position.x} cy={position.y} r="20" fill={selfColor} stroke="#ffffff" strokeWidth="5" />
+        <circle cx={position.x} cy={position.y} r="9" fill={selfColor} stroke="#fff" strokeWidth="4" />
       </svg>
       <div className="day7-map-legend"><span><i style={{ backgroundColor: selfColor }} /> You</span><span><i style={{ backgroundColor: '#f472b6' }} /> Teammates</span></div>
     </div>
@@ -300,7 +202,7 @@ function App() {
 
   const keysRef = useRef(new Set())
 
-  const playerRef = useRef({ x: 500, y: 300 })
+  const playerRef = useRef({ x: 1000, y: 600 })
 
   const remotePlayersRef = useRef(new Map())
 
@@ -315,7 +217,7 @@ function App() {
   const profileRef = useRef(profile)
 
 
-  const [position, setPosition] = useState({ x: 500, y: 300 })
+  const [position, setPosition] = useState({ x: 1000, y: 600 })
   const [hoveredPeer, setHoveredPeer] = useState(null)
   const [isImmersiveMode, setIsImmersiveMode] = useState(false)
   const [presentationMode, setPresentationMode] = useState(false)
@@ -600,6 +502,11 @@ function App() {
 
     let lastDisplay = 0
 
+    const officeImage = new window.Image()
+    officeImage.decoding = 'async'
+    officeImage.src = officeFloorplan
+
+
     // CSS decides the viewport size. The Canvas backing store follows it at
     // device pixel ratio; no nonuniform scaling/stretch on fullscreen entry.
     const viewport = { width: WIDTH, height: HEIGHT, dpr: 1 }
@@ -693,536 +600,51 @@ function App() {
 
 
 
-    // Day 9: Architectural top-down renderer. Visual-only: all collision geometry,
-    // room boundaries, real-time positions and camera transforms remain untouched.
-    function rounded(x, y, w, h, radius, fill, stroke, lineWidth = 1) {
-      ctx.beginPath()
-      ctx.roundRect(x, y, w, h, Math.min(radius, w / 2, h / 2))
-      if (fill) { ctx.fillStyle = fill; ctx.fill() }
-      if (stroke) { ctx.lineWidth = lineWidth; ctx.strokeStyle = stroke; ctx.stroke() }
-    }
-
-    function ellipse(x, y, rx, ry, fill, stroke, width = 1) {
-      ctx.beginPath()
-      ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2)
-      if (fill) { ctx.fillStyle = fill; ctx.fill() }
-      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = width; ctx.stroke() }
-    }
-
-    function woodGrain(x, y, w, h, color = 'rgba(102,72,45,0.13)', spacing = 13) {
+    // Campus V4: the selected office PNG is the actual map artwork.
+    // Real-time avatars remain Canvas overlays, not part of a static mock-up.
+    // Compact human markers leave walkable rooms visually open.
+    // Names are shown for you and nearby / hovered peers; distant labels
+    // are available in the online list, hover tooltip and proximity panel.
+    function drawAvatar(x, y, name, color, showLabel = true) {
       ctx.save()
-      ctx.beginPath()
-      ctx.rect(x, y, w, h)
-      ctx.clip()
-      ctx.lineWidth = 0.7
-      ctx.strokeStyle = color
-      for (let i = 0, fy = y + spacing; fy < y + h; i++, fy += spacing) {
-        ctx.beginPath()
-        ctx.moveTo(x, fy)
-        ctx.lineTo(x + w, fy)
-        ctx.stroke()
-        for (let fx = x + ((i * 29 + 18) % 81); fx < x + w; fx += 81) {
-          ctx.beginPath()
-          ctx.moveTo(fx, fy)
-          ctx.lineTo(fx, Math.min(y + h, fy + spacing))
-          ctx.stroke()
-        }
-      }
-      // Fine, deterministic grain; no random noise or texture downloads.
-      ctx.strokeStyle = 'rgba(255,255,255,0.09)'
-      for (let i = 0; i < 9; i++) {
-        const gy = y + (i * 19 + 7) % Math.max(h, 1)
-        ctx.beginPath()
-        ctx.moveTo(x + 8, gy)
-        ctx.lineTo(x + Math.max(8, w - 8), gy + 1.5)
-        ctx.stroke()
-      }
-      ctx.restore()
-    }
-
-
-    function drawCampusLandscape() {
-      // Original botanical border: all plants are decor on the impassable perimeter.
-      ctx.save()
-      const garden = ctx.createLinearGradient(0, 0, 0, HEIGHT)
-      garden.addColorStop(0, '#455e45')
-      garden.addColorStop(0.5, '#6b8160')
-      garden.addColorStop(1, '#3f624b')
-      rounded(3, 3, WIDTH - 6, HEIGHT - 6, 13, garden)
-
-      function shrub(x, y, size, seed) {
-        ctx.save()
-        ctx.translate(x, y)
-        ctx.shadowColor = 'rgba(20,37,23,0.24)'
-        ctx.shadowBlur = 5
-        ctx.shadowOffsetY = 2
-        ellipse(1.5, 3.5, size * 0.94, size * 0.45, '#405341')
-        ctx.shadowBlur = 0
-        ctx.shadowOffsetY = 0
-        ellipse(0, 0, size * 0.85, size * 0.84, '#33563c')
-        for (let leaf = 0; leaf < 6; leaf++) {
-          const a = leaf * 2.4 + seed
-          ellipse(
-            Math.cos(a) * size * 0.38,
-            Math.sin(a) * size * 0.35,
-            size * (leaf % 2 ? 0.46 : 0.38),
-            size * 0.34,
-            ['#77956a', '#5b8258', '#8fa579', '#476f4c'][leaf % 4]
-          )
-        }
-        ellipse(-size * 0.28, -size * 0.32, size * 0.16, size * 0.12, 'rgba(234,243,198,0.23)')
-        ctx.restore()
-      }
-
-      // Two landscaped strips, with restrained trees rather than game-like tiles.
-      for (let i = 0; i < 39; i++) {
-        const x = 13 + i * 25.5
-        const size = 9 + (i * 7 % 5)
-        shrub(x, 18, size, i)
-        shrub(x + 6, 583, size, i + 5)
-      }
-      for (let j = 2; j < 21; j++) {
-        const y = 25 + j * 26.2
-        shrub(17, y, 9 + (j % 4), j)
-        shrub(981, y + 3, 9 + ((j + 2) % 4), j + 2)
-      }
-      ctx.restore()
-    }
-
-    function drawRoomDetails() {
-      // Sightlines, wall art, rugs and task lamps. These are small visual decals,
-      // not additional obstacles, so multiplayer collisions stay unchanged.
-      roomZones.forEach((room, i) => {
-        const { x, y, w, h } = room
-        ctx.save()
-        const artX = x + (i % 2 ? w - 36 : 16)
-        rounded(artX, y + 62, 22, 14, 1, '#817e72', '#f1ede4', 1.5)
-        rounded(artX + 2, y + 64, 18, 10, 1, i > 1 ? '#93a9a0' : '#9fac9d')
-        ctx.fillStyle = '#d6cec0'
-        ctx.beginPath()
-        ctx.moveTo(artX + 2, y + 74)
-        ctx.lineTo(artX + 10, y + 67)
-        ctx.lineTo(artX + 15, y + 72)
-        ctx.lineTo(artX + 20, y + 66)
-        ctx.lineTo(artX + 20, y + 74)
-        ctx.fill()
-        // Low-profile planter: do not make a visual barrier to movement.
-        const px = i % 2 ? x + 24 : x + w - 22
-        const py = y + h - 21
-        ellipse(px, py, 7, 7, '#bba68b', '#ece3d3', 1)
-        ellipse(px, py, 4, 5, '#628268')
-        ellipse(px - 3, py - 2, 3.5, 2.5, '#819d71')
-        ellipse(px + 2, py - 3, 3.5, 2.6, '#507653')
-        // Small task lights on free wall surfaces.
-        rounded(x + w / 2 - 13, y + 13, 26, 3, 1.5, '#f5e5c1')
-        ctx.fillStyle = 'rgba(251,239,208,0.1)'
-        ctx.fillRect(x + w / 2 - 27, y + 17, 54, 16)
-        ctx.restore()
-      })
-      // Reception signage in main hall.
-      ctx.save()
-      rounded(461, 294, 80, 18, 4, 'rgba(49,65,60,0.78)', '#dddbc7', 0.9)
-      ctx.font = '700 8px Arial'
-      ctx.textAlign = 'center'
-      ctx.fillStyle = '#f5f0e5'
-      ctx.fillText('ATRIUM  •  01', 501, 306)
-      ctx.restore()
-    }
-
-    function drawArchitecturalBase() {
-      // Warm exhibition-board background instead of a neon gaming grid.
-      const background = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
-      background.addColorStop(0, '#dedbd3')
-      background.addColorStop(0.55, '#c9c6bd')
-      background.addColorStop(1, '#b4b6af')
-      ctx.fillStyle = background
-      // The garden ring remains visible around the inset architectural structure.
-      ctx.fillRect(26, 31, WIDTH - 52, HEIGHT - 62)
-
-      ctx.save()
-      ctx.shadowColor = 'rgba(51,47,40,0.25)'
-      ctx.shadowBlur = 23
-      ctx.shadowOffsetY = 8
-      rounded(30, 36, 940, 528, 9, '#ece6da', '#f8f5ec', 4)
-      ctx.restore()
-
-      // Fine stone speckles throughout the common area.
-      ctx.save()
-      ctx.beginPath()
-      ctx.rect(32, 37, 936, 524)
-      ctx.clip()
-      for (let i = 0; i < 290; i++) {
-        const px = 28 + (i * 67.97 % 940)
-        const py = 26 + (i * 119.31 % 548)
-        ctx.fillStyle = i % 4 === 0 ? 'rgba(255,255,255,0.20)' : 'rgba(73,69,60,0.075)'
-        ctx.fillRect(px, py, i % 5 === 0 ? 2 : 1, 1)
-      }
-      ctx.restore()
-
-      // Architectural central atrium/corridor with stone-tile inlays.
-      const stone = ctx.createLinearGradient(338, 38, 665, 570)
-      stone.addColorStop(0, '#d7d5cb')
-      stone.addColorStop(0.5, '#f0ede4')
-      stone.addColorStop(1, '#c7c4bb')
-      rounded(329, 28, 342, 544, 9, '#a5a397', '#a09f95', 1.5)
-      rounded(335, 34, 330, 532, 6, stone, '#fefcf4', 1.5)
-      ctx.save()
-      ctx.strokeStyle = 'rgba(99,106,101,0.16)'
-      ctx.lineWidth = 0.7
-      for (let cy = 41; cy < 560; cy += 39) {
-        ctx.beginPath()
-        ctx.moveTo(340, cy)
-        ctx.lineTo(660, cy)
-        ctx.stroke()
-      }
-      for (let cx = 343; cx < 660; cx += 44) {
-        ctx.beginPath()
-        ctx.moveTo(cx, 40)
-        ctx.lineTo(cx, 559)
-        ctx.stroke()
-      }
-      ctx.restore()
-
-      // Brass inlaid navigation strips rather than bright neon beams.
-      ctx.fillStyle = '#a89a7c'
-      ctx.fillRect(363, 56, 2, 488)
-      ctx.fillRect(635, 56, 2, 488)
-      ctx.fillStyle = 'rgba(255,255,255,0.7)'
-      ctx.fillRect(367, 56, 1, 488)
-      ctx.fillRect(631, 56, 1, 488)
-
-      // Atrium skylight pools drawn as subtle static radial lighting.
-      for (const py of [156, 435]) {
-        const light = ctx.createRadialGradient(501, py, 8, 501, py, 115)
-        light.addColorStop(0, 'rgba(255,253,236,0.50)')
-        light.addColorStop(1, 'rgba(255,253,236,0)')
-        ctx.fillStyle = light
-        ctx.fillRect(381, py - 116, 240, 232)
-      }
-
-      // Reception/corridor signage.
-      ctx.fillStyle = '#6a706a'
-      ctx.font = '600 10px Arial'
-      ctx.textAlign = 'center'
-      ctx.fillText('PROXISPEAK  /  OFFICE 01', 500, 45)
-      ctx.font = '500 9px Arial'
-      ctx.fillStyle = '#8b8e84'
-      ctx.fillText('CENTRAL ATRIUM', 500, 305)
-      ctx.textAlign = 'left'
-    }
-
-    function drawPlant(x, y) {
-      ctx.save()
-      ctx.shadowColor = 'rgba(41,43,31,0.30)'
-      ctx.shadowBlur = 7
-      ctx.shadowOffsetY = 3
-      ellipse(x, y, 12, 12, '#baa48b', '#f2e2cb', 1.4)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-      ellipse(x, y, 9.5, 9.5, '#485044')
-      for (let n = 0; n < 7; n++) {
-        const angle = n * Math.PI * 2 / 7
-        const lx = x + Math.cos(angle) * 5.5
-        const ly = y + Math.sin(angle) * 5.5
-        ctx.save()
-        ctx.translate(lx, ly)
-        ctx.rotate(angle + Math.PI / 2)
-        ellipse(0, -2, 3.3, 8.2, n % 2 === 0 ? '#6d8561' : '#354e3c')
-        ctx.restore()
-      }
-      ellipse(x, y, 2.5, 2.5, '#a0ad77')
-      ctx.restore()
-    }
-
-    function drawAvatar(x, y, name, color) {
-      // A restrained, top-down human marker instead of a glowing ball.
-      ctx.save()
-      ctx.shadowColor = 'rgba(27,38,39,0.28)'
-      ctx.shadowBlur = 7
-      ctx.shadowOffsetY = 4
-      ellipse(x + 1, y + 7, 17, 12, 'rgba(26,35,37,0.17)')
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-
-      ellipse(x, y, 18.5, 18.5, '#faf8f1', 'rgba(48,55,55,0.34)', 1)
-      ellipse(x, y, 15.5, 15.5, color)
-      // Top-down shoulders, head and front highlight.
-      ellipse(x, y + 6, 10, 8, 'rgba(20,43,52,0.43)')
-      ellipse(x, y - 3.5, 7.3, 7.3, '#f4d2b0', '#e8bb91', 0.8)
-      ctx.beginPath()
-      ctx.arc(x, y - 4.5, 7.4, Math.PI * 1.05, Math.PI * 1.93)
-      ctx.strokeStyle = '#3f3730'
-      ctx.lineWidth = 3
-      ctx.stroke()
-      ellipse(x - 2.1, y - 5.5, 1.2, 1.2, 'rgba(255,255,255,0.55)')
-      ctx.restore()
-
-      ctx.save()
-      ctx.font = '600 11px Arial'
-      ctx.textAlign = 'center'
-      const labelWidth = Math.min(205, ctx.measureText(name).width + 21)
-      ctx.shadowColor = 'rgba(11,20,25,0.23)'
-      ctx.shadowBlur = 5
-      rounded(x - labelWidth / 2, y - 45, labelWidth, 19, 6, 'rgba(33,42,44,0.92)', 'rgba(255,255,255,0.23)', 0.6)
-      ctx.shadowBlur = 0
-      ctx.fillStyle = '#f8f8f4'
-      ctx.fillText(name, x, y - 32)
-      ctx.restore()
-    }
-
-    function drawRoom(zone) {
-      const { x, y, w, h, title, subtitle } = zone
-      ctx.save()
-      ctx.shadowColor = 'rgba(56,46,36,0.24)'
-      ctx.shadowBlur = 15
-      ctx.shadowOffsetY = 5
-      rounded(x, y, w, h, 5, '#e9e5dc', '#807c73', 3)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-
-      // Layered warm wood planks, toned differently for each function.
-      ctx.save()
-      ctx.beginPath()
-      ctx.roundRect(x + 7, y + 7, w - 14, h - 14, 3)
-      ctx.clip()
-      const plankBase = ctx.createLinearGradient(x, y, x + w, y + h)
-      if (title === 'LOUNGE') {
-        plankBase.addColorStop(0, '#b6b0a3')
-        plankBase.addColorStop(0.6, '#dad4c7')
-        plankBase.addColorStop(1, '#b5ad9f')
-      } else {
-        plankBase.addColorStop(0, '#e5c7a1')
-        plankBase.addColorStop(0.55, '#ccaa81')
-        plankBase.addColorStop(1, '#b68e67')
-      }
-      ctx.fillStyle = plankBase
-      ctx.fillRect(x + 7, y + 7, w - 14, h - 14)
-      woodGrain(x + 7, y + 7, w - 14, h - 14, title === 'LOUNGE' ? 'rgba(72,71,64,0.09)' : 'rgba(110,80,52,0.16)', 12)
-
-      if (title === 'MEETING AREA' || title === 'LOUNGE') {
-        // Large muted rug anchors the furniture and creates depth.
-        ctx.shadowColor = 'rgba(49,45,38,0.15)'
-        ctx.shadowBlur = 5
-        rounded(x + 25, y + 72, w - 50, h - 94, 7,
-          title === 'MEETING AREA' ? '#a1a9a4' : '#8a9c90', '#e6e2d5', 3)
-        ctx.shadowBlur = 0
-        rounded(x + 33, y + 80, w - 66, h - 110, 3, null, 'rgba(242,241,229,0.40)', 1)
-      }
-      ctx.restore()
-
-      // An actual architectural wall, rather than a floating game HUD block.
-      ctx.fillStyle = '#746b5f'
-      ctx.fillRect(x + 2, y + 2, w - 4, 7)
-      ctx.fillStyle = '#f7f1e5'
-      ctx.fillRect(x + 5, y + 9, w - 10, 3)
-      ctx.fillStyle = 'rgba(71,75,71,0.27)'
-      ctx.fillRect(x + 5, y + h - 9, w - 10, 5)
-      ctx.fillStyle = 'rgba(255,255,255,0.43)'
-      ctx.fillRect(x + 10, y + 54, w - 20, 1)
-
-      // Glass panels on corridor-side facade; passable geometry unchanged.
-      const edge = x < WIDTH / 2 ? x + w - 7 : x + 7
-      ctx.fillStyle = 'rgba(206,231,226,0.25)'
-      ctx.fillRect(edge - 2, y + 64, 4, 49)
-      ctx.fillRect(edge - 2, y + 149, 4, 42)
-      ctx.strokeStyle = '#77908c'
-      ctx.lineWidth = 1.5
-      ctx.beginPath()
-      ctx.moveTo(edge, y + 63)
-      ctx.lineTo(edge, y + 113)
-      ctx.moveTo(edge, y + 149)
-      ctx.lineTo(edge, y + 191)
-      ctx.stroke()
-
-      // Minimal room label, with no bulky opaque HUD panel.
-      ctx.textAlign = 'left'
-      ctx.font = '700 12px Arial'
-      ctx.fillStyle = '#39443f'
-      ctx.fillText(title, x + 18, y + 27)
-      ctx.font = '10px Arial'
-      ctx.fillStyle = '#666d67'
-      ctx.fillText(subtitle, x + 18, y + 42)
-      ctx.fillStyle = '#8d8070'
-      rounded(x + w - 32, y + 17, 15, 3, 1, '#978f7f')
-      ctx.restore()
-    }
-
-    function drawOfficeChair(cx, cy, scale = 1, tint = '#414b4a') {
-      ctx.save()
-      ctx.translate(cx, cy)
-      ctx.scale(scale, scale)
-      ctx.shadowColor = 'rgba(38,32,29,0.25)'
-      ctx.shadowBlur = 5
+      ctx.shadowColor = 'rgba(0,0,0,0.32)'
+      ctx.shadowBlur = 4
       ctx.shadowOffsetY = 2
-      ellipse(0, 0, 10.2, 10.2, '#323a3b')
+      ctx.beginPath()
+      ctx.ellipse(x + 1, y + 8, 11, 4, 0, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(16,24,25,0.26)'
+      ctx.fill()
       ctx.shadowBlur = 0
       ctx.shadowOffsetY = 0
-      ellipse(0, -0.3, 7.3, 7.5, tint, '#7d8984', 0.9)
-      rounded(-8, -9, 16, 4, 2, '#283333', '#74817e', 0.6)
-      rounded(-10, -1, 3, 8, 1, '#2d3433')
-      rounded(7, -1, 3, 8, 1, '#2d3433')
-      ctx.restore()
-    }
-
-    function drawDesk(item) {
-      const { x, y, w, h } = item
-      ctx.save()
-      ctx.shadowColor = 'rgba(45,34,28,0.28)'
-      ctx.shadowBlur = 8
-      ctx.shadowOffsetY = 3
-      rounded(x + 1, y + 2, w - 2, h - 2, 3, '#6e5542', '#5b4738', 1)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-      const oak = ctx.createLinearGradient(x, y, x + w, y + h)
-      oak.addColorStop(0, '#edcea8')
-      oak.addColorStop(0.55, '#cda476')
-      oak.addColorStop(1, '#a37b51')
-      rounded(x + 2, y + 1, w - 4, h - 5, 3, oak, 'rgba(255,246,227,0.8)', 0.7)
-      ctx.fillStyle = 'rgba(83,62,43,0.2)'
-      ctx.fillRect(x + 6, y + h - 5, w - 12, 1)
-
-      // Flat-screen monitor, visible bezel, stand, tiny UI lines.
-      rounded(x + 7, y + 4, 24, 13, 2, '#30393a', '#18252a', 0.8)
-      rounded(x + 9, y + 5, 20, 10, 1, '#6f9696')
-      ctx.fillStyle = '#d3e0d4'
-      ctx.fillRect(x + 11, y + 7, 11, 1.5)
-      ctx.fillStyle = '#aac0b2'
-      ctx.fillRect(x + 11, y + 10, 7, 1)
-      ctx.fillRect(x + 11, y + 12, 13, 1)
-      ctx.fillStyle = '#424a47'
-      ctx.fillRect(x + 18, y + 17, 2, 2)
-      ctx.fillRect(x + 14, y + 19, 10, 1)
-      // Compact keyboard with visible keys and mouse.
-      rounded(x + 7, y + 21, 27, 4, 1, '#5a5f59')
-      ctx.fillStyle = '#d6d8cf'
-      for (let k = 0; k < 11; k++) ctx.fillRect(x + 9 + k * 2, y + 22, 1, 0.85)
-      ellipse(x + 38, y + 22, 2.2, 3.5, '#4b5654')
-      // Ceramic mug and notebook.
-      rounded(x + 44, y + 5, 10, 14, 1, '#e4e2d6', '#9b927e', 0.6)
-      ctx.strokeStyle = '#a6ada6'
-      ctx.lineWidth = 0.65
-      for (let ly = y + 9; ly <= y + 15; ly += 3) {
-        ctx.beginPath(); ctx.moveTo(x + 46, ly); ctx.lineTo(x + 52, ly); ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(x, y, 11.5, 0, Math.PI * 2)
+      ctx.fillStyle = '#fbfbf7'
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(x, y, 9, 0, Math.PI * 2)
+      ctx.fillStyle = color
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(x, y - 1.7, 4.4, 0, Math.PI * 2)
+      ctx.fillStyle = '#f1d1b4'
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(x, y - 3, 4.1, Math.PI * 1.07, Math.PI * 1.92)
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = '#302c2a'
+      ctx.stroke()
+      if (showLabel) {
+        ctx.font = '600 9px system-ui, sans-serif'
+        const tw = Math.min(138, ctx.measureText(name).width + 14)
+        ctx.beginPath()
+        ctx.roundRect(x - tw / 2, y - 30, tw, 14, 4)
+        ctx.fillStyle = 'rgba(10,21,22,0.88)'
+        ctx.fill()
+        ctx.textAlign = 'center'
+        ctx.fillStyle = '#fff'
+        ctx.fillText(name, x, y - 20)
       }
-      ellipse(x + 59, y + 9, 3.2, 3.2, '#faf7ed', '#bbb4a3', 0.7)
-      ellipse(x + 59, y + 9, 1.7, 1.7, '#725f4b')
-
-      // Chair occupies remaining collision footprint, not additional obstacles.
-      drawOfficeChair(x + w - 8.5, y + h / 2 + 0.8, 0.63)
       ctx.restore()
-    }
-
-    function drawMeetingTable(item) {
-      const { x, y, w, h } = item
-      ctx.save()
-      ctx.shadowColor = 'rgba(34,38,34,0.20)'
-      ctx.shadowBlur = 11
-      ctx.shadowOffsetY = 3
-      rounded(x, y, w, h, 12, '#505a53', '#313e38', 1)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-      // Chairs arranged along the two sides within collision footprint.
-      for (let i = 0; i < 4; i++) {
-        const cx = x + 26 + i * 26
-        drawOfficeChair(cx, y + 10.5, 0.68, '#63716a')
-        drawOfficeChair(cx, y + h - 9.5, 0.68, '#63716a')
-      }
-      const top = ctx.createLinearGradient(x + 9, y + 13, x + w - 9, y + h - 13)
-      top.addColorStop(0, '#e4bd91')
-      top.addColorStop(0.6, '#b58d64')
-      top.addColorStop(1, '#99704f')
-      rounded(x + 13, y + 14, w - 26, h - 28, 12, top, '#f1dbc0', 1)
-      woodGrain(x + 23, y + 19, w - 46, h - 38, 'rgba(84,61,43,0.12)', 7)
-      rounded(x + 37, y + h / 2 - 5, 21, 10, 2, '#343f40')
-      rounded(x + 39, y + h / 2 - 4, 17, 7, 1, '#8aa4a2')
-      ellipse(x + w - 38, y + h / 2, 5, 5, '#e6ddc9')
-      ellipse(x + w - 38, y + h / 2, 2.5, 2.5, '#6b806c')
-      ctx.restore()
-    }
-
-    function drawSofa(item) {
-      const { x, y, w, h } = item
-      ctx.save()
-      ctx.shadowColor = 'rgba(37,47,40,0.30)'
-      ctx.shadowBlur = 9
-      ctx.shadowOffsetY = 4
-      rounded(x, y, w, h, 8, '#475a50', '#31453b', 1)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-      rounded(x + 5, y + 4, w - 10, h - 8, 5, '#b2c0ac', '#718577', 1)
-      rounded(x + 5, y + 4, w - 10, 10, 3, '#6d8879', '#425d50', 0.8)
-      const seat = (w - 22) / 3
-      for (let i = 0; i < 3; i++) {
-        rounded(x + 9 + i * seat, y + 15, seat - 3, h - 21, 3,
-          i === 1 ? '#cad0be' : '#bec7b7', 'rgba(85,112,96,0.54)', 0.7)
-      }
-      rounded(x + 2, y + 8, 8, h - 14, 3, '#5f796c')
-      rounded(x + w - 10, y + 8, 8, h - 14, 3, '#5f796c')
-      ctx.restore()
-    }
-
-    function drawCoffeeTable(item) {
-      const { x, y, w, h } = item
-      ctx.save()
-      ctx.shadowColor = 'rgba(45,43,38,0.21)'
-      ctx.shadowBlur = 8
-      ctx.shadowOffsetY = 3
-      rounded(x + 1, y + 2, w - 2, h - 2, 8, '#a99175', '#6d6355', 1)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-      const glass = ctx.createLinearGradient(x + 9, y + 5, x + w - 8, y + h - 6)
-      glass.addColorStop(0, '#d6c6aa')
-      glass.addColorStop(1, '#bba589')
-      rounded(x + 11, y + 5, w - 22, h - 10, 13, glass, '#eee2ce', 1)
-      ellipse(x + w / 2 - 11, y + h / 2, 7, 7, '#e5ddd0', '#a59e90', 0.8)
-      ellipse(x + w / 2 - 11, y + h / 2, 4, 4, '#758e71')
-      ellipse(x + w / 2 + 16, y + h / 2 - 2, 4.5, 4.5, '#f8f5e9', '#8d8577', 0.7)
-      ellipse(x + w / 2 + 16, y + h / 2 - 2, 2.4, 2.4, '#7b6250')
-      ctx.restore()
-    }
-
-    function drawCounter(item) {
-      const { x, y, w, h } = item
-      ctx.save()
-      ctx.shadowColor = 'rgba(44,34,25,0.24)'
-      ctx.shadowBlur = 8
-      ctx.shadowOffsetY = 4
-      rounded(x, y, w, h, 4, '#796c5a', '#5d5349', 0.8)
-      ctx.shadowBlur = 0
-      ctx.shadowOffsetY = 0
-      const top = ctx.createLinearGradient(x, y, x, y + h)
-      top.addColorStop(0, '#ead7b8')
-      top.addColorStop(1, '#bda483')
-      rounded(x + 2, y + 1, w - 4, h - 4, 3, top, '#efe0ca', 0.6)
-      rounded(x + 12, y + 5, 28, 13, 2, '#303e41', '#5f6b6b', 0.6)
-      rounded(x + 15, y + 7, 22, 8, 1, '#779a99')
-      rounded(x + 48, y + 7, 19, 9, 1, '#eeecdf', '#acaa98', 0.7)
-      ellipse(x + w - 15, y + h / 2, 6, 6, '#6e8165')
-      ctx.restore()
-    }
-
-    function drawObstacle(item) {
-      if (item.type === 'desk') drawDesk(item)
-      else if (item.type === 'table') drawMeetingTable(item)
-      else if (item.type === 'sofa') drawSofa(item)
-      else if (item.type === 'coffee') drawCoffeeTable(item)
-      else if (item.type === 'counter') drawCounter(item)
-    }
-
-    function drawFloorDetails() {
-      // Interior details are small and non-blocking; the obstacle map is unchanged.
-      for (const [x, y] of [[293, 111], [57, 224], [944, 225], [711, 529]]) {
-        drawPlant(x, y)
-      }
-      // Planters and subtle floor features in the atrium.
-      for (const [x, y] of [[346, 83], [654, 83], [346, 516], [654, 516]]) {
-        drawPlant(x, y)
-      }
-      // Small, architectural wall sconces by the reception area.
-      for (const py of [91, 520]) {
-        rounded(422, py, 15, 3, 1, '#f9e4aa')
-        rounded(563, py, 15, 3, 1, '#f9e4aa')
-      }
     }
 
     function render(time) {
@@ -1340,27 +762,52 @@ function App() {
       // in the fullscreen frame; backing landscape remains beautifully neutral.
       const focusedRoom = roomZones.find((room) => room.title === getRoom(p.x, p.y))
       const roomOnly = Boolean(focusedRoom && cameraRef.current.zoom > 1.18)
-      if (roomOnly) {
-        ctx.beginPath()
-        ctx.rect(focusedRoom.x - 7, focusedRoom.y - 7, focusedRoom.w + 14, focusedRoom.h + 14)
-        ctx.clip()
+      // No hard clipping: the high-resolution image remains visible across
+      // smooth transitions. Room focus is controlled by the camera only.
+
+      // Premium visual surround beyond the office image: landscaping, not fake rooms.
+      // Only visible near the edges of the map when walking toward the building perimeter.
+      const surround = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
+      surround.addColorStop(0, '#1a2824')
+      surround.addColorStop(0.5, '#324a39')
+      surround.addColorStop(1, '#182722')
+      ctx.fillStyle = surround
+      ctx.fillRect(0, 0, WIDTH, HEIGHT)
+      for (let sy = 34; sy < HEIGHT; sy += 74) {
+        for (const sx of [85, 1915]) {
+          ctx.beginPath()
+          ctx.arc(sx + Math.sin(sy * 0.04) * 17, sy, 28, 0, Math.PI * 2)
+          ctx.fillStyle = '#4a6347'
+          ctx.fill()
+          ctx.beginPath()
+          ctx.arc(sx - 6 + Math.sin(sy * 0.04) * 17, sy - 7, 19, 0, Math.PI * 2)
+          ctx.fillStyle = '#76916d'
+          ctx.fill()
+        }
       }
 
-      // Day 9: premium architectural floorplan and top-down furniture.
-      drawCampusLandscape()
-      drawArchitecturalBase()
-      roomZones.forEach(drawRoom)
-      obstacles.forEach(drawObstacle)
-      drawRoomDetails()
-      drawFloorDetails()
+      // The same selected architectural artwork, drawn at its original 4:3 ratio.
+      // Room / furniture footprints now occupy DOUBLE the world coordinates.
+      if (officeImage.complete && officeImage.naturalWidth > 0) {
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
+        ctx.drawImage(officeImage, ARTWORK.x, ARTWORK.y, ARTWORK.w, ARTWORK.h)
+      } else {
+        ctx.fillStyle = '#1d2829'
+        ctx.fillRect(ARTWORK.x, ARTWORK.y, ARTWORK.w, ARTWORK.h)
+        ctx.fillStyle = '#ecf0e7'
+        ctx.font = '600 18px Arial'
+        ctx.textAlign = 'center'
+        ctx.fillText('Loading expanded office interior…', 1000, 600)
+      }
 
       // Preserve original authoritative 100px earshot radius.
       ctx.save()
       ctx.beginPath()
       ctx.arc(p.x, p.y, RADIUS, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(74,117,120,0.055)'
+      ctx.fillStyle = 'rgba(74,117,120,0.018)'
       ctx.fill()
-      ctx.strokeStyle = 'rgba(50,105,108,0.38)'
+      ctx.strokeStyle = 'rgba(50,105,108,0.15)'
       ctx.lineWidth = 1.2
       ctx.setLineDash([4, 7])
       ctx.stroke()
@@ -1387,7 +834,9 @@ function App() {
 
             : `Player ${String(player.socketId).slice(0, 4)}`,
 
-          AVATAR_COLORS.includes(player.avatarColor) ? player.avatarColor : '#f472b6'
+          AVATAR_COLORS.includes(player.avatarColor) ? player.avatarColor : '#f472b6',
+          Math.hypot(player.x - p.x, player.y - p.y) <= 75 ||
+            hoveredPeerIdRef.current === player.socketId
 
         )
 
@@ -1670,7 +1119,7 @@ function App() {
 
               <h2>Office Floor 01</h2>
 
-              <p>Architectural 2D office · Live shared workspace</p>
+              <p>Expanded 2000 × 1200 architectural campus · Live workspace</p>
 
             </div>
 
@@ -1688,7 +1137,7 @@ function App() {
                   <span className="campus-chip-dot" />
                   <span className="campus-brand-name">PROXISPEAK</span>
                   <span className="campus-brand-slash">/</span>
-                  <span className="campus-brand-space">{currentRoom === 'CORRIDOR' ? 'OFFICE CAMPUS' : currentRoom}</span>
+                  <span className="campus-brand-space">{currentRoom === 'CORRIDOR' ? 'OFFICE HQ' : currentRoom}</span>
                 </div>
                 <div className="campus-live-badge" aria-label={connectionLabel}>
                   <span className={joinedOffice ? 'campus-online-light' : 'campus-offline-light'} />
@@ -1697,7 +1146,7 @@ function App() {
               </div>
               <div className="campus-member-rail" aria-label="People in this office">
                 {[{ id: 'local', name: profile.name, color: profile.color, self: true }, ...onlineMembers]
-                  .slice(0, 3)
+                  .slice(0, 2)
                   .map((member) => (
                     <div className={`campus-member-card${member.self ? ' is-self' : ''}`} key={member.id}>
                       <div className="campus-person-portrait" style={{ '--person-accent': member.color }} aria-hidden="true">
@@ -1709,7 +1158,7 @@ function App() {
                       <span className="campus-person-status" title={member.self ? 'Your avatar' : 'Connected teammate'} />
                     </div>
                   ))}
-                {onlineMembers.length > 2 && <div className="campus-member-more">+{onlineMembers.length - 2}</div>}
+                {onlineMembers.length > 1 && <div className="campus-member-more">+{onlineMembers.length - 1}</div>}
               </div>
               {isImmersiveMode && (
                 <aside className="campus-room-inspector" aria-label="Current room information">
@@ -1749,7 +1198,7 @@ function App() {
                       {presentationMode ? '↙' : '⤢'} <span>{presentationMode ? 'Dashboard' : 'Focus view'}</span>
                     </button>
                   ) : (
-                    <span className="campus-room-notice">Exit the room to return to dashboard</span>
+                    <span className="campus-room-notice">Walk out of this zone to return to dashboard</span>
                   )}
                   <span className="campus-controls-divider" />
                   <span className="campus-walk-hint">W A S D <span>to walk</span></span>
@@ -1757,9 +1206,10 @@ function App() {
                 {campusGuideOpen && (
                   <div className="campus-guide" role="status">
                     <strong>Explore ProxiSpeak</strong>
-                    <span>Use WASD or arrow keys to walk.</span>
-                    <span>Enter a room to open its immersive view.</span>
-                    <span>Teammates and 100px proximity are live server data.</span>
+                    <span>Use WASD or arrow keys to explore the expanded campus.</span>
+                    <span>The camera follows you. Enter a room to open its immersive view.</span>
+                    <span>2000×1200 world · 100px proximity (server-authoritative).</span>
+                    <span>Use the minimap outline to understand your viewing area.</span>
                     <span>Voice calling remains disabled until signaling integration is complete.</span>
                   </div>
                 )}
