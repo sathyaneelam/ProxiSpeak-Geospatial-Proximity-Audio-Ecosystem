@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { WebRTCPeerManager } from '../webrtcPeerManager.js';
+import { WebRTCPeerManager, getRTCConfiguration } from '../webrtcPeerManager.js';
 
 // Minimal mock for RTCPeerConnection in Node.js test environment
 class MockRTCPeerConnection {
@@ -147,4 +147,33 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     manager.destroy();
     assert.equal(manager.peers.size, 0);
   });
+
+  test('getRTCConfiguration provides default STUN servers and incorporates TURN from env', () => {
+    const config = getRTCConfiguration();
+    assert.ok(Array.isArray(config.iceServers));
+    assert.ok(config.iceServers.length >= 2);
+    assert.ok(config.iceServers.some((s) => s.urls.includes('stun.l.google.com')));
+
+    // Test with TURN env vars set
+    const oldTurnUrl = process.env.VITE_TURN_URL;
+    const oldTurnUser = process.env.VITE_TURN_USERNAME;
+    const oldTurnCred = process.env.VITE_TURN_CREDENTIAL;
+
+    try {
+      process.env.VITE_TURN_URL = 'turn:turn.example.com:3478';
+      process.env.VITE_TURN_USERNAME = 'proxi_user';
+      process.env.VITE_TURN_CREDENTIAL = 'proxi_password';
+
+      const turnConfig = getRTCConfiguration();
+      const turnEntry = turnConfig.iceServers.find((s) => s.urls === 'turn:turn.example.com:3478');
+      assert.ok(turnEntry);
+      assert.equal(turnEntry.username, 'proxi_user');
+      assert.equal(turnEntry.credential, 'proxi_password');
+    } finally {
+      process.env.VITE_TURN_URL = oldTurnUrl;
+      process.env.VITE_TURN_USERNAME = oldTurnUser;
+      process.env.VITE_TURN_CREDENTIAL = oldTurnCred;
+    }
+  });
 });
+

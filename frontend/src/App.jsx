@@ -8,10 +8,10 @@ const SPEED = 220
 const RADIUS = 100
 
 const furniture = [
-  { x: 80, y: 80, w: 180, h: 85, name: 'WORKSTATION A' },
-  { x: 740, y: 80, w: 180, h: 85, name: 'WORKSTATION B' },
-  { x: 80, y: 420, w: 180, h: 85, name: 'MEETING AREA' },
-  { x: 740, y: 420, w: 180, h: 85, name: 'LOUNGE' },
+  { x: 80, y: 80, w: 180, h: 85, type: 'desk', label: 'WORKSTATION A', name: 'WORKSTATION A', isCollidable: true },
+  { x: 740, y: 80, w: 180, h: 85, type: 'desk', label: 'WORKSTATION B', name: 'WORKSTATION B', isCollidable: true },
+  { x: 80, y: 420, w: 180, h: 85, type: 'wall', label: 'MEETING AREA', name: 'MEETING AREA', isCollidable: true },
+  { x: 740, y: 420, w: 180, h: 85, type: 'sofa', label: 'LOUNGE', name: 'LOUNGE', isCollidable: true },
 ]
 
 const colleagues = [
@@ -26,7 +26,9 @@ function App() {
   const playerRef = useRef({ x: 500, y: 300 })
   const [position, setPosition] = useState({ x: 500, y: 300 })
 
-  // ProxiSpeak Member 4: Spatial Audio & WebRTC
+  const signalingUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SIGNALING_URL) || 'http://localhost:3000'
+
+  // ProxiSpeak Member 4: Spatial Audio & WebRTC with Obstacle Sound Blocking
   const {
     isAudioActive,
     isMuted,
@@ -43,7 +45,10 @@ function App() {
     officeId: 'floor_01',
     localPosition: position,
     peers: colleagues,
+    obstacles: furniture,
     earshotRadius: RADIUS,
+    signalingUrl,
+    preferredTransport: 'socketio',
   })
 
   const isAudioActiveRef = useRef(false)
@@ -273,8 +278,11 @@ function App() {
                   <span className="person-distance">{distance} px</span>
 
                   {(isAudioActive || isToneSimulationActive) && (
-                    <span className="audio-metrics-tag" title={`Volume Gain: ${gain}%, Stereo Panning: ${panLabel}`}>
-                      Vol: {gain}% | Pan: {panLabel}
+                    <span
+                      className={`audio-metrics-tag ${metrics.isObstructed ? 'obstructed' : ''}`}
+                      title={`Volume Gain: ${gain}%, Stereo Panning: ${panLabel}${metrics.isObstructed ? ` (Sound dampened by obstacle: ${metrics.obstacleAttenuation}% transmitted)` : ''}`}
+                    >
+                      Vol: {gain}% | Pan: {panLabel}{metrics.isObstructed ? ' 🧱' : ''}
                     </span>
                   )}
 

@@ -10,6 +10,7 @@ import {
   computeDistance,
   computeSpatialGain,
   computeStereoPan,
+  computeObstacleAttenuation,
 } from './spatialAudioMath.js';
 
 export class SpatialAudioGraph {
@@ -60,7 +61,7 @@ export class SpatialAudioGraph {
    * @param {{ x: number, y: number }} [localPos]
    * @param {number} [radius]
    */
-  addPeerStream(peerId, stream, peerPos = { x: 0, y: 0 }, localPos = { x: 0, y: 0 }, radius = DEFAULT_EARSHOT_RADIUS) {
+  addPeerStream(peerId, stream, peerPos = { x: 0, y: 0 }, localPos = { x: 0, y: 0 }, radius = DEFAULT_EARSHOT_RADIUS, obstacles = []) {
     if (!stream || !stream.getAudioTracks().length) {
       console.warn(`[SpatialAudioGraph] No audio tracks found for peer ${peerId}`);
       return;
@@ -106,9 +107,11 @@ export class SpatialAudioGraph {
       gainNode.connect(ctx.destination);
     }
 
-    // Initialize initial spatial attenuation and panning
+    // Initialize initial spatial attenuation, obstacle sound blocking, and panning
     const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
-    const initialGain = computeSpatialGain(distance, radius, this.gainCurve);
+    const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
+    const obstacleFactor = computeObstacleAttenuation(localPos, peerPos, obstacles);
+    const initialGain = this.isMuted ? 0.0 : Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
     const initialPan = computeStereoPan(localPos.x, peerPos.x, radius);
 
     const now = ctx.currentTime;
@@ -125,28 +128,32 @@ export class SpatialAudioGraph {
       lastGain: initialGain,
       lastPan: initialPan,
       lastDistance: distance,
+      lastObstacleAttenuation: obstacleFactor,
     });
 
-    return { gain: initialGain, pan: initialPan, distance };
+    return { gain: initialGain, pan: initialPan, distance, obstacleAttenuation: obstacleFactor };
   }
 
   /**
-   * Updates distance-based gain attenuation and stereo panning for a peer.
+   * Updates distance-based gain attenuation, obstacle sound blocking, and stereo panning for a peer.
    * Smoothly ramps AudioParams to prevent audible pops/clicks.
    * 
    * @param {string} peerId
    * @param {{ x: number, y: number }} peerPos
    * @param {{ x: number, y: number }} localPos
    * @param {number} [radius]
-   * @returns {{ gain: number, pan: number, distance: number } | null}
+   * @param {Array<Object>} [obstacles]
+   * @returns {{ gain: number, pan: number, distance: number, obstacleAttenuation: number } | null}
    */
-  updatePeerSpatial(peerId, peerPos, localPos, radius = DEFAULT_EARSHOT_RADIUS) {
+  updatePeerSpatial(peerId, peerPos, localPos, radius = DEFAULT_EARSHOT_RADIUS, obstacles = []) {
     const peerData = this.peerNodes.get(peerId);
     if (!peerData) return null;
 
     const ctx = this.getAudioContext();
     const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
-    const targetGain = this.isMuted ? 0.0 : computeSpatialGain(distance, radius, this.gainCurve);
+    const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
+    const obstacleFactor = computeObstacleAttenuation(localPos, peerPos, obstacles);
+    const targetGain = this.isMuted ? 0.0 : Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
     const targetPan = computeStereoPan(localPos.x, peerPos.x, radius);
 
     const now = ctx.currentTime;
@@ -168,8 +175,9 @@ export class SpatialAudioGraph {
     peerData.lastGain = targetGain;
     peerData.lastPan = targetPan;
     peerData.lastDistance = distance;
+    peerData.lastObstacleAttenuation = obstacleFactor;
 
-    return { gain: targetGain, pan: targetPan, distance };
+    return { gain: targetGain, pan: targetPan, distance, obstacleAttenuation: obstacleFactor };
   }
 
   /**

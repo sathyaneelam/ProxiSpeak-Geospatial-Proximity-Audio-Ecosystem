@@ -8,13 +8,55 @@
  * 4. Robust track addition, ICE exchange, state tracking, and teardown.
  */
 
-export const DEFAULT_RTC_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-  iceCandidatePoolSize: 2,
-};
+/**
+ * Resolves WebRTC ICE configuration with standard Google STUN servers
+ * and dynamic TURN server credentials configurable via environment variables
+ * (e.g., VITE_STUN_URL, VITE_TURN_URL, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL).
+ * 
+ * @param {RTCConfiguration} [customConfig]
+ * @returns {RTCConfiguration}
+ */
+export function getRTCConfiguration(customConfig = {}) {
+  const env =
+    (typeof process !== 'undefined' && process.env) ||
+    (typeof import.meta !== 'undefined' && import.meta.env) ||
+    {};
+
+  const stunUrls = env.VITE_STUN_URL || env.STUN_URL;
+  const stunList = stunUrls
+    ? stunUrls.split(',').map((u) => ({ urls: u.trim() }))
+    : [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ];
+
+  const iceServers = [...stunList];
+
+  const turnUrl = env.VITE_TURN_URL || env.TURN_URL;
+  if (turnUrl) {
+    const turnUrls = turnUrl.includes(',') ? turnUrl.split(',').map((u) => u.trim()) : turnUrl;
+    const turnServer = { urls: turnUrls };
+    const username = env.VITE_TURN_USERNAME || env.TURN_USERNAME;
+    const credential =
+      env.VITE_TURN_CREDENTIAL ||
+      env.TURN_CREDENTIAL ||
+      env.VITE_TURN_PASSWORD ||
+      env.TURN_PASSWORD;
+
+    if (username) turnServer.username = username;
+    if (credential) turnServer.credential = credential;
+
+    iceServers.push(turnServer);
+  }
+
+  return {
+    iceServers: customConfig.iceServers || iceServers,
+    iceCandidatePoolSize: customConfig.iceCandidatePoolSize ?? 2,
+    ...customConfig,
+  };
+}
+
+export const DEFAULT_RTC_CONFIG = getRTCConfiguration();
 
 export class WebRTCPeerManager {
   /**
@@ -31,7 +73,7 @@ export class WebRTCPeerManager {
     this.localUserId = options.localUserId || `user_${Math.random().toString(36).slice(2, 8)}`;
     this.officeId = options.officeId || 'default-office';
     this.signalingTransport = options.signalingTransport;
-    this.rtcConfig = options.rtcConfig || DEFAULT_RTC_CONFIG;
+    this.rtcConfig = options.rtcConfig ? getRTCConfiguration(options.rtcConfig) : getRTCConfiguration();
 
     this.onRemoteStream = options.onRemoteStream || (() => {});
     this.onPeerConnectionState = options.onPeerConnectionState || (() => {});
@@ -75,25 +117,44 @@ export class WebRTCPeerManager {
   _bindSignaling() {
     this.unsubSignaling.push(
       this.signalingTransport.on('webrtc:offer', (payload) => {
-        this.handleRemoteOffer(payload.fromUserId, payload.sdp);
+        const fromPeerId = payload.fromUserId || payload.from;
+        const sdp = payload.sdp || payload.offer;
+        if (fromPeerId && sdp) {
+          this.handleRemoteOffer(fromPeerId, sdp);
+        }
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('webrtc:answer', (payload) => {
-        this.handleRemoteAnswer(payload.fromUserId, payload.sdp);
+        const fromPeerId = payload.fromUserId || payload.from;
+        const sdp = payload.sdp || payload.answer;
+        if (fromPeerId && sdp) {
+          this.handleRemoteAnswer(fromPeerId, sdp);
+        }
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('webrtc:ice-candidate', (payload) => {
-        this.handleRemoteIceCandidate(payload.fromUserId, payload.candidate);
+        const fromPeerId = payload.fromUserId || payload.from;
+        if (fromPeerId && payload.candidate) {
+          this.handleRemoteIceCandidate(fromPeerId, payload.candidate);
+        }
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('voice:user-left', (payload) => {
-        this.closePeer(payload.userId);
+        const peerId = payload.userId || payload.peerUserId || payload.socketId;
+        if (peerId) this.closePeer(peerId);
+      })
+    );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on('proximity:leave', (payload) => {
+        const peerId = payload.peerUserId || payload.peerSocketId || payload.userId;
+        if (peerId) this.closePeer(peerId);
       })
     );
   }
