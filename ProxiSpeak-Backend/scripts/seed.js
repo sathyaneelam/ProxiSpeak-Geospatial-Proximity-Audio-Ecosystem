@@ -101,6 +101,7 @@ async function upsertTestUsersAndPositions(testUsers, officeId) {
       {
         upsert: true,
         new: true,
+        returnDocument: 'after',
         runValidators: true,
         setDefaultsOnInsert: true
       }
@@ -119,6 +120,7 @@ async function upsertTestUsersAndPositions(testUsers, officeId) {
       {
         upsert: true,
         new: true,
+        returnDocument: 'after',
         runValidators: true,
         setDefaultsOnInsert: true
       }
@@ -152,7 +154,7 @@ async function seedDatabase(options = {}) {
   if (!isConnected) {
     try {
       await connectDB(process.env.MONGODB_URI, {
-        serverSelectionTimeoutMS: 2500,
+        serverSelectionTimeoutMS: 10000,
         exitOnError: false
       });
       isConnected = true;
