@@ -974,7 +974,8 @@ function App() {
     peers: audioPeers,
     earshotRadius: RADIUS,
     signalingUrl: 'http://localhost:3000',
-    preferredTransport: 'socketio',
+    preferredTransport: 'shared',
+    sharedSocketRef: socketRef,
   })
 
   return (
@@ -1353,21 +1354,27 @@ function App() {
 
           <section className="info-card">
 
-            <h3>Audio Engine</h3>
+            <h3>Proximity Voice</h3>
 
-            <p>Prepared for Week 3 spatial audio integration.</p>
+            <p>Live WebRTC microphone audio is limited to nearby office members.</p>
 
-            <div className="audio-placeholder">◉ &nbsp; Sathya audio hook loaded — {audio.audioState}</div>
-            <button className="audio-start-pending" disabled title="Backend signaling payload contract needs alignment">Start Voice — awaiting signaling alignment</button>
-
-            <div className="audio-note">
-
-              {connectionError
-
-                ? `Connection issue: ${connectionError}`
-
-                : `Server-confirmed nearby peers: ${liveNearbyPeers.length}. Audio signaling is not yet compatible with Pranav's backend.`}
-
+            <div className="audio-placeholder">◉ &nbsp; Microphone: {audio.audioState === 'connected' ? 'enabled (peer connection pending or active)' : audio.audioState}</div>
+            <button
+              className="audio-start-pending"
+              style={{ cursor: joinedOffice && audio.audioState !== 'requesting' ? 'pointer' : 'not-allowed', color: '#ecfdf5', opacity: 1 }}
+              disabled={!joinedOffice || audio.audioState === 'requesting'}
+              onClick={() => audio.isAudioActive ? audio.stopAudio() : audio.startAudio()}
+            >
+              {audio.audioState === 'requesting' ? 'Requesting microphone…' : audio.isAudioActive ? 'Stop Voice' : 'Start Voice'}
+            </button>
+            {audio.isAudioActive && (
+              <button className="audio-start-pending" style={{ cursor: 'pointer', color: '#ecfdf5', opacity: 1 }} onClick={audio.toggleMute}>
+                {audio.isMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+              </button>
+            )}
+            <div className="audio-note" role="status">
+              {audio.audioError || connectionError ||
+                `Server-confirmed nearby peers: ${liveNearbyPeers.length}. Both people must enable their microphones for a call.`}
             </div>
 
           </section>

@@ -6,6 +6,10 @@ import {
   isWithinEarshot,
   computeSpatialGain,
   computeStereoPan,
+  isPointInsideRect,
+  lineSegmentsIntersect,
+  lineIntersectsObstacle,
+  computeObstacleAttenuation,
 } from '../spatialAudioMath.js';
 
 describe('Spatial Audio Math - Proximity and Attenuation', () => {
@@ -80,5 +84,51 @@ describe('Spatial Audio Math - Proximity and Attenuation', () => {
   test('computeStereoPan handles invalid coordinates safely', () => {
     assert.equal(computeStereoPan(NaN, 500, 100), 0.0);
     assert.equal(computeStereoPan(500, undefined, 100), 0.0);
+  });
+
+  test('isPointInsideRect correctly checks point boundary', () => {
+    assert.equal(isPointInsideRect(150, 150, 100, 100, 100, 100), true);
+    assert.equal(isPointInsideRect(50, 150, 100, 100, 100, 100), false);
+    assert.equal(isPointInsideRect(100, 100, 100, 100, 100, 100), true);
+  });
+
+  test('lineSegmentsIntersect detects crossing segments', () => {
+    // Cross: (0, 0)->(10, 10) and (0, 10)->(10, 0)
+    assert.equal(
+      lineSegmentsIntersect({ x: 0, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }, { x: 10, y: 0 }),
+      true
+    );
+    // Parallel: (0, 0)->(10, 0) and (0, 5)->(10, 5)
+    assert.equal(
+      lineSegmentsIntersect({ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 5 }, { x: 10, y: 5 }),
+      false
+    );
+  });
+
+  test('lineIntersectsObstacle detects obstacle intersection', () => {
+    const wall = { x: 100, y: 100, w: 20, h: 200, type: 'wall' };
+    // Ray crossing the wall from x=50 to x=150 at y=150
+    assert.equal(lineIntersectsObstacle({ x: 50, y: 150 }, { x: 150, y: 150 }, wall), true);
+    // Ray to the side of the wall
+    assert.equal(lineIntersectsObstacle({ x: 50, y: 50 }, { x: 150, y: 50 }, wall), false);
+    // Ray ending inside the wall
+    assert.equal(lineIntersectsObstacle({ x: 50, y: 150 }, { x: 110, y: 150 }, wall), true);
+  });
+
+  test('computeObstacleAttenuation dampens sound according to obstacle type', () => {
+    const wall = { x: 100, y: 100, w: 20, h: 200, type: 'wall' };
+    const desk = { x: 200, y: 100, w: 50, h: 50, type: 'desk' };
+
+    // Unobstructed path
+    assert.equal(computeObstacleAttenuation({ x: 50, y: 50 }, { x: 80, y: 50 }, [wall, desk]), 1.0);
+
+    // Wall obstructed path (0.1 transmission)
+    assert.equal(computeObstacleAttenuation({ x: 50, y: 150 }, { x: 150, y: 150 }, [wall]), 0.1);
+
+    // Desk obstructed path (0.65 transmission)
+    assert.equal(computeObstacleAttenuation({ x: 180, y: 125 }, { x: 260, y: 125 }, [desk]), 0.65);
+
+    // Double obstruction: crosses wall and desk (0.1 * 0.65 = 0.065)
+    assert.equal(computeObstacleAttenuation({ x: 50, y: 125 }, { x: 260, y: 125 }, [wall, desk]), 0.065);
   });
 });
