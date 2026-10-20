@@ -73,26 +73,99 @@ function generate60TestUsers(officeId = 'office-01') {
 }
 
 /**
- * Seed database with default office and 60 test users
+ * Safely upsert test users and their live positions without duplication.
+ * Reuses existing test user records matching their unique email and updates their live positions.
+ *
+ * @param {Array} testUsers - Generated test user definitions
+ * @param {string|mongoose.Types.ObjectId} officeId - Target office ObjectId
+ * @returns {Promise<{ users: Array, positions: Array }>} Upserted documents
  */
-async function seedDatabase() {
+async function upsertTestUsersAndPositions(testUsers, officeId) {
+  const operations = testUsers.map(async (u) => {
+    // 1. Re-use existing user or create a new one using atomic upsert by unique email
+    const userDoc = await User.findOneAndUpdate(
+      { email: u.email },
+      {
+        $set: {
+          displayName: u.displayName,
+          avatarColor: u.avatarColor,
+          avatarUrl: u.avatarUrl,
+          isOnline: true,
+          currentOfficeId: officeId,
+          lastActive: new Date()
+        },
+        $setOnInsert: {
+          _id: u._id
+        }
+      },
+      {
+        upsert: true,
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true
+      }
+    );
+
+    // 2. Re-use existing live position or create one using atomic upsert by unique userId
+    const positionDoc = await LivePosition.findOneAndUpdate(
+      { userId: userDoc._id },
+      {
+        $set: {
+          officeId,
+          location: u.location,
+          lastUpdated: new Date()
+        }
+      },
+      {
+        upsert: true,
+        new: true,
+        runValidators: true,
+        setDefaultsOnInsert: true
+      }
+    );
+
+    return { user: userDoc, position: positionDoc };
+  });
+
+  const results = await Promise.all(operations);
+  return {
+    users: results.map((r) => r.user),
+    positions: results.map((r) => r.position)
+  };
+}
+
+/**
+ * Seed database with default office and 60 test users.
+ * Safely upserts records to avoid duplicates and preserve IDs on repeated runs.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.disconnectOnExit] - Whether to disconnect after seeding
+ * @returns {Promise<{ office: object, testUsers: Array }>}
+ */
+async function seedDatabase(options = {}) {
+  const { disconnectOnExit } = options;
   console.log('--- Starting ProxiSpeak Office & User Seeding ---');
 
-  let isConnected = false;
-  try {
-    await connectDB(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 2500,
-      exitOnError: false
-    });
-    isConnected = true;
-  } catch (err) {
-    console.warn('MongoDB connection not available:', err.message);
-    console.log('Generating seed data in memory for validation...');
+  const initiallyConnected = mongoose.connection.readyState === 1;
+  let isConnected = initiallyConnected;
+
+  if (!isConnected) {
+    try {
+      await connectDB(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 2500,
+        exitOnError: false
+      });
+      isConnected = true;
+    } catch (err) {
+      console.warn('MongoDB connection not available:', err.message);
+      console.log('Generating seed data in memory for validation...');
+    }
   }
 
   const office = isConnected
     ? await seedDefaultOffice()
     : {
+        _id: new mongoose.Types.ObjectId(),
         code: 'office-01',
         name: 'ProxiSpeak Main Office',
         dimensions: { width: 1000, height: 600 },
@@ -110,32 +183,24 @@ async function seedDatabase() {
   const testUsers = generate60TestUsers(office._id || 'office-01');
 
   if (isConnected) {
-    // Clear previous test users
-    await User.deleteMany({ email: /@proxispeak\.local$/ });
-    await LivePosition.deleteMany({ officeId: office._id });
+    const { users, positions } = await upsertTestUsersAndPositions(testUsers, office._id);
 
-    // Seed 60 users and their live positions
-    const userDocs = testUsers.map((u) => ({
-      _id: u._id,
-      email: u.email,
-      displayName: u.displayName,
-      avatarColor: u.avatarColor,
-      avatarUrl: u.avatarUrl,
-      isOnline: true,
-      currentOfficeId: office._id
-    }));
-    await User.insertMany(userDocs);
+    // Sync testUsers array with persisted user IDs to maintain consistent references
+    testUsers.forEach((u, i) => {
+      if (users[i]) {
+        u._id = users[i]._id;
+      }
+    });
 
-    const positionDocs = testUsers.map((u) => ({
-      userId: u._id,
-      officeId: office._id,
-      location: u.location,
-      lastUpdated: new Date()
-    }));
-    await LivePosition.insertMany(positionDocs);
+    console.log(`[OK] Successfully persisted/updated ${users.length} test users and live positions in office '${office.code}' in MongoDB.`);
 
-    console.log(`[OK] Successfully persisted 60 test users into office '${office.code}' in MongoDB.`);
-    await disconnectDB();
+    const shouldDisconnect = disconnectOnExit !== undefined
+      ? disconnectOnExit
+      : (require.main === module || !initiallyConnected);
+
+    if (shouldDisconnect) {
+      await disconnectDB();
+    }
   } else {
     console.log(`[OK] Generated 60 test users (ready to persist once MongoDB is online).`);
   }
@@ -145,7 +210,7 @@ async function seedDatabase() {
 
 if (require.main === module) {
   require('dotenv').config();
-  seedDatabase()
+  seedDatabase({ disconnectOnExit: true })
     .then(() => process.exit(0))
     .catch((err) => {
       console.error('Seeding failed:', err);
@@ -155,5 +220,6 @@ if (require.main === module) {
 
 module.exports = {
   generate60TestUsers,
-  seedDatabase
+  seedDatabase,
+  upsertTestUsersAndPositions
 };
