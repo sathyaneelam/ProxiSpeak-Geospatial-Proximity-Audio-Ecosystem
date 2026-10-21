@@ -1,11 +1,9 @@
 
 function errorHandler(err, req, res, next) {
   console.error(err.stack);
-
   if (res.headersSent) {
     return next(err);
   }
-
   res.status(err.status || 500).json({
     status: "error",
     message:
@@ -14,5 +12,4 @@ function errorHandler(err, req, res, next) {
         : "Internal server error",
   });
 }
-
 module.exports = errorHandler;
