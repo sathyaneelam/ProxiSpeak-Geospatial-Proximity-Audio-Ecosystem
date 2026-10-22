@@ -17,6 +17,8 @@ describe('LivePosition Schema & Index Validation', () => {
 
     await position.validate();
     assert.deepStrictEqual(position.location, [500, 300]);
+    assert.strictEqual(position.officeId, dummyOfficeId);
+    assert.strictEqual(position.userId, dummyUserId);
     assert.strictEqual(position.socketId, 'sock_abc123');
     assert.ok(position.lastUpdated instanceof Date);
   });
@@ -166,5 +168,16 @@ describe('LivePosition Schema & Index Validation', () => {
       hasOfficeIdIndex,
       'Schema must define single-field index on { officeId: 1 } for office-level avatar queries'
     );
+  });
+
+  it('should associate live position with an office via officeId and enforce unique userId schema reference', () => {
+    const userIdPath = LivePosition.schema.paths.userId;
+    const officeIdPath = LivePosition.schema.paths.officeId;
+
+    assert.strictEqual(officeIdPath.options.ref, 'Office', 'officeId must reference Office model');
+    assert.strictEqual(officeIdPath.options.required, true, 'officeId is required');
+    assert.strictEqual(userIdPath.options.ref, 'User', 'userId must reference User model');
+    assert.strictEqual(userIdPath.options.required, true, 'userId is required');
+    assert.strictEqual(userIdPath.options.unique, true, 'userId must be unique in schema');
   });
 });

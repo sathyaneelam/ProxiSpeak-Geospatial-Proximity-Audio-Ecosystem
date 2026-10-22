@@ -244,9 +244,44 @@ To run tests:
 ```bash
 npm test
 ```
-The test suite utilizes the Node.js native test runner (`node --test`) with 27 automated tests across 9 test suites:
-- `tests/schemas/user.test.js`: Validations, defaults, email normalization
-- `tests/schemas/office.test.js`: Default bounds, 100px radius, zones & obstacle validation
-- `tests/schemas/livePosition.test.js`: 2D coordinate array and non-negative boundary validation, compound `{ officeId: 1, location: '2d' }` index, and `{ officeId: 1 }` presence index configuration
-- `tests/spatial/planarProximity.test.js`: Euclidean geometry, spherical GeoJSON failure proof, audio volume attenuation
-- `tests/services/positionService.test.js`: Coordinate checks, proximity radius filtering, backend event contract shapes
+The test suite utilizes the Node.js native test runner (`node --test`) with automated tests across the core architecture:
+- `tests/schemas/user.test.js`: User profile schema validation, default attributes, email normalization and constraints.
+- `tests/schemas/office.test.js`: Office dimensions, 100px proximity radius, room zones, and furniture obstacle validation.
+- `tests/schemas/livePosition.test.js`: Planar 2D pixel coordinate validation, non-negative bounds, `officeId` foreign key reference, unique `userId` constraint, single-field index `{ officeId: 1 }`, and compound planar index `{ officeId: 1, location: '2d' }`.
+- `tests/schemas/seedData.test.js`: Benchmark seed dataset quality (60 users), room zone distributions, and safe idempotent upsert operations.
+- `tests/spatial/planarProximity.test.js`: Flat Euclidean distance on Cartesian triangles, architectural proof of 2D planar over spherical GeoJSON (2dsphere), smoothstep Hermite audio volume attenuation, and stereo panning.
+- `tests/services/positionService.test.js`: Coordinate validation, contract event shapes, obstacle layouts, proximity performance benchmarking, and MongoDB planar query discovery with office isolation.
+- `tests/signaling/signalingServer.test.js`: Socket.IO WebRTC signaling relay, proximity event propagation, and earshot-based offer/answer filtering.
+
+---
+
+## 6. Testing and Validation
+
+The database layer and spatial proximity subsystem have been thoroughly verified across the following criteria:
+
+1. **Office Association & Multi-Tenant Partitioning:**
+   - Every `LivePosition` document strictly belongs to a specific office room via a required `officeId` referencing the `Office` collection.
+   - The single-field index `{ officeId: 1 }` enables rapid office-level avatar queries, while the compound index `{ officeId: 1, location: '2d' }` partitions spatial indexing per office.
+
+2. **User Identity & 1:1 Mapping:**
+   - `LivePosition` enforces a required, unique index on `userId` (`{ userId: 1 }`), ensuring an avatar can only maintain a single active live position at any moment across the virtual ecosystem.
+
+3. **Planar Cartesian Coordinate Integrity:**
+   - Positions are stored strictly as flat 2D pixel coordinate arrays `[x, y]`.
+   - Schema and service validators guarantee finite numeric values and reject negative numbers, invalid array lengths, or non-numeric inputs. Canvas origin `[0, 0]` is verified valid.
+
+4. **Planar Proximity Queries (`getNearbyUsers`):**
+   - Verified that proximity queries construct and execute MongoDB planar circular queries using `{ officeId, location: { $geoWithin: { $center: [[x, y], radius] } } }`.
+   - Users within the configured communication radius (default 100px) are returned with exact Pythagorean pixel distance, monotonic smoothstep gain attenuation, and stereo pan.
+   - Users outside the communication radius are excluded.
+
+5. **Multi-Tenant Office Isolation (Zero Cross-Room Audio Leakage):**
+   - Users located in different virtual offices are filtered out by the database query partition, even when their X/Y coordinates are identical or within earshot distance of each other.
+
+6. **Boundary Behavior & Threshold Adaptability:**
+   - Boundary tests confirm that avatars positioned exactly on the configured radius cutoff ($d = R$) are returned with zero volume gain ($\text{gain} = 0.0$), while avatars even marginally beyond the cutoff ($d > R$) are excluded.
+   - Dynamically configurable proximity radii (e.g. 50px whisper zone or 200px broadcast zone) adapt filtering bounds seamlessly.
+
+7. **Deterministic Execution:**
+   - All tests run deterministically in-memory using Node's native test runner and mock interfaces, avoiding live database dependencies and unnecessary disk writes during automated CI/CD runs.
+
