@@ -1,9 +1,8 @@
-
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { io } from 'socket.io-client'
 
 const SERVER_URL =
-  import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001'
+  import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000'
 
 export function useSocket() {
   const socketRef = useRef(null)
@@ -22,7 +21,7 @@ export function useSocket() {
     const handleConnect = () => {
       setIsConnected(true)
       setConnectionError(null)
-      console.log('Connected to ProxiSpeak backend')
+      console.log('Connected to ProxiSpeak backend:', SERVER_URL)
     }
 
     const handleDisconnect = () => {
@@ -45,9 +44,20 @@ export function useSocket() {
     }
   }, [])
 
-  const joinOffice = useCallback((officeId) => {
+  const joinOffice = useCallback((officeId, userDetails = {}) => {
     if (!socketRef.current?.connected) return false
 
+    const payload = {
+      officeId,
+      userId: userDetails.userId || socketRef.current.id,
+      displayName: userDetails.displayName || 'You',
+      x: typeof userDetails.x === 'number' ? userDetails.x : 500,
+      y: typeof userDetails.y === 'number' ? userDetails.y : 300,
+    }
+
+    // Official backend signaling contract
+    socketRef.current.emit('office:join', payload)
+    // Legacy fallback
     socketRef.current.emit('join-office', { officeId })
     return true
   }, [])
@@ -55,6 +65,13 @@ export function useSocket() {
   const moveAvatar = useCallback((officeId, x, y) => {
     if (!socketRef.current?.connected) return false
 
+    // Official backend signaling contract
+    socketRef.current.emit('avatar:move', {
+      officeId,
+      x,
+      y,
+    })
+    // Legacy fallback
     socketRef.current.emit('move-avatar', {
       officeId,
       x,

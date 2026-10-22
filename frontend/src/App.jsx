@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { useSocket } from './hooks/useSocket'
+import { useProximityAudio } from './hooks/useProximityAudio'
+import { AudioControls } from './components/AudioControls'
 
 const WIDTH = 1000
 const HEIGHT = 600
@@ -129,65 +131,116 @@ function App() {
   const lastSyncTimeRef = useRef(0)
 
   const [position, setPosition] = useState({ x: 500, y: 300 })
+  const [remotePlayers, setRemotePlayers] = useState(new Map())
+
+  const {
+    isAudioActive,
+    isMicMuted,
+    audioContextState,
+    permissionState,
+    audioError,
+    activePeers,
+    startAudio,
+    stopAudio,
+    toggleMute,
+    resumeAudio,
+    updateSpatialPositions,
+  } = useProximityAudio({
+    socketRef,
+    myPosition: position,
+    earshotRadius: RADIUS,
+  })
 
   useEffect(() => {
     if (!isConnected || !socketRef.current) return
 
     const socket = socketRef.current
 
-    const handleOfficeState = ({ players = [] }) => {
+    const handleOfficeJoined = (data) => {
+      const peers = data?.peers || data?.players || []
       remotePlayersRef.current.clear()
 
-      players.forEach((player) => {
-        if (player.userId !== socket.id) {
-          remotePlayersRef.current.set(player.userId, player)
+      peers.forEach((peer) => {
+        const id = peer.socketId || peer.userId
+        if (id && id !== socket.id) {
+          remotePlayersRef.current.set(id, peer)
         }
       })
 
-      console.log('Existing players:', players.length)
+      setRemotePlayers(new Map(remotePlayersRef.current))
+      updateSpatialPositions(remotePlayersRef.current)
+      console.log('Office peers synced:', peers.length)
     }
 
-    const handleUserJoined = (player) => {
-      if (player.userId === socket.id) return
-      remotePlayersRef.current.set(player.userId, player)
-      console.log('Player joined:', player.userId)
+    const handleUserJoined = (peer) => {
+      const id = peer.socketId || peer.userId
+      if (!id || id === socket.id) return
+
+      remotePlayersRef.current.set(id, peer)
+      setRemotePlayers(new Map(remotePlayersRef.current))
+      updateSpatialPositions(remotePlayersRef.current)
+      console.log('Peer joined:', id)
     }
 
-    const handleAvatarMoved = (player) => {
-      if (player.userId === socket.id) return
+    const handleAvatarMoved = (peer) => {
+      const id = peer.socketId || peer.userId
+      if (!id || id === socket.id) return
 
-      const existing = remotePlayersRef.current.get(player.userId)
-
-      remotePlayersRef.current.set(player.userId, {
+      const existing = remotePlayersRef.current.get(id)
+      const updated = {
         ...(existing || {}),
-        ...player,
-      })
+        ...peer,
+      }
+      remotePlayersRef.current.set(id, updated)
+      setRemotePlayers(new Map(remotePlayersRef.current))
+      updateSpatialPositions(remotePlayersRef.current)
     }
 
-    const handleUserLeft = ({ userId }) => {
-      remotePlayersRef.current.delete(userId)
-      console.log('Player left:', userId)
+    const handleUserLeft = (data) => {
+      const id = data?.socketId || data?.userId
+      if (id) {
+        remotePlayersRef.current.delete(id)
+        setRemotePlayers(new Map(remotePlayersRef.current))
+        updateSpatialPositions(remotePlayersRef.current)
+        console.log('Peer left:', id)
+      }
     }
 
-    socket.on('office-state', handleOfficeState)
+    // Backend official events
+    socket.on('office:joined', handleOfficeJoined)
+    socket.on('user:joined', handleUserJoined)
+    socket.on('avatar:moved', handleAvatarMoved)
+    socket.on('user:left', handleUserLeft)
+
+    // Legacy fallback events
+    socket.on('office-state', handleOfficeJoined)
     socket.on('user-joined', handleUserJoined)
     socket.on('avatar-moved', handleAvatarMoved)
     socket.on('user-left', handleUserLeft)
 
     return () => {
-      socket.off('office-state', handleOfficeState)
+      socket.off('office:joined', handleOfficeJoined)
+      socket.off('user:joined', handleUserJoined)
+      socket.off('avatar:moved', handleAvatarMoved)
+      socket.off('user:left', handleUserLeft)
+      socket.off('office-state', handleOfficeJoined)
       socket.off('user-joined', handleUserJoined)
       socket.off('avatar-moved', handleAvatarMoved)
       socket.off('user-left', handleUserLeft)
     }
-  }, [isConnected, socketRef])
+  }, [isConnected, socketRef, updateSpatialPositions])
 
   useEffect(() => {
     if (isConnected) {
-      joinOffice(OFFICE_ID)
+      joinOffice(OFFICE_ID, {
+        userId: socketRef.current?.id,
+        displayName: 'You',
+        x: position.x,
+        y: position.y,
+      })
       console.log('Joining ProxiSpeak office:', OFFICE_ID)
     }
-  }, [isConnected, joinOffice])
+  }, [isConnected, joinOffice, position.x, position.y, socketRef])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -344,6 +397,7 @@ function App() {
           const now = performance.now()
           if (now - lastSyncTimeRef.current >= 100) {
             moveAvatar(OFFICE_ID, p.x, p.y)
+            updateSpatialPositions(remotePlayersRef.current)
             lastSyncTimeRef.current = now
           }
         }
@@ -445,11 +499,11 @@ function App() {
       window.removeEventListener('keyup', keyup)
       window.removeEventListener('blur', clearKeys)
     }
-  }, [moveAvatar, socketRef])
+  }, [moveAvatar, socketRef, updateSpatialPositions])
 
   const nearbyPeople = useMemo(() => {
-    const dynamicPlayers = Array.from(remotePlayersRef.current.values()).map((player) => ({
-      name: `Player ${String(player.userId).slice(0, 4)}`,
+    const dynamicPlayers = Array.from(remotePlayers.values()).map((player) => ({
+      name: player.displayName || `Player ${String(player.userId || player.socketId || '').slice(0, 4)}`,
       color: '#f472b6',
       x: player.x,
       y: player.y,
@@ -462,7 +516,7 @@ function App() {
         distance,
       }
     })
-  }, [position.x, position.y, isConnected])
+  }, [position.x, position.y, remotePlayers])
 
   return (
     <div className="app-shell">
@@ -478,7 +532,7 @@ function App() {
 
         <div className="sidebar-bottom">
           <span className="status-dot" />{' '}
-          {isConnected ? 'Live Multiplayer Active' : 'Frontend Prototype'}
+          {isConnected ? 'Live Multiplayer Active' : connectionError ? `Error: ${connectionError}` : 'Frontend Prototype'}
         </div>
       </aside>
 
@@ -492,7 +546,7 @@ function App() {
             </p>
           </div>
           <div className="live-pill">
-            {isConnected ? '● LIVE MULTIPLAYER' : '● LOCAL DEMO'}
+            {isConnected ? '● LIVE MULTIPLAYER' : connectionError ? '● OFFLINE' : '● LOCAL DEMO'}
           </div>
         </header>
 
@@ -554,14 +608,21 @@ function App() {
           </section>
 
           <section className="info-card">
-            <h3>Audio Engine</h3>
-            <p>Prepared for Week 3 spatial audio integration.</p>
-            <div className="audio-placeholder">◉ &nbsp; WebRTC + Web Audio API</div>
-            <div className="audio-note">
-              {connectionError
-                ? `Connection issue: ${connectionError}`
-                : 'Live avatar synchronization is active. Voice is not connected yet.'}
-            </div>
+            <h3>Proximity Audio Engine</h3>
+            <p>Spatial WebRTC peer audio with 100px earshot attenuation & stereo panning.</p>
+            <AudioControls
+              isAudioActive={isAudioActive}
+              isMicMuted={isMicMuted}
+              audioContextState={audioContextState}
+              permissionState={permissionState}
+              audioError={audioError}
+              activePeers={activePeers}
+              onStartAudio={startAudio}
+              onStopAudio={stopAudio}
+              onToggleMute={toggleMute}
+              onResumeAudio={resumeAudio}
+              isConnected={isConnected}
+            />
           </section>
         </div>
       </main>
