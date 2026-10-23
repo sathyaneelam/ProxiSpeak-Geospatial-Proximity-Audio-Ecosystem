@@ -185,7 +185,43 @@ class AudioContextManager {
       disconnect,
     };
   }
+  /**
+   * Smoothly updates a GainNode's volume.
+   * Useful for proximity-based audio volume changes.
+   * @param {GainNode} gainNode
+   * @param {number} targetGain Volume between 0 and 1
+   * @param {number} [duration=0.05] Transition duration in seconds
+   */
+  setGainSmoothly(gainNode, targetGain, duration = 0.05) {
+    if (!gainNode || !gainNode.gain) {
+      throw new TypeError('A valid GainNode is required.');
+    }
 
+    const volume = Number(targetGain);
+    const transition = Number(duration);
+
+    if (!Number.isFinite(volume) || !Number.isFinite(transition)) {
+      throw new TypeError('Volume and duration must be finite numbers.');
+    }
+
+    const safeVolume = Math.max(0, Math.min(1, volume));
+    const safeDuration = Math.max(0, transition);
+    const parameter = gainNode.gain;
+    const now = parameter.context.currentTime;
+
+    parameter.cancelScheduledValues(now);
+
+    if (safeDuration === 0) {
+      parameter.setValueAtTime(safeVolume, now);
+      return;
+    }
+
+    parameter.setTargetAtTime(
+      safeVolume,
+      now,
+      Math.max(0.001, safeDuration / 3)
+    );
+  }
   /**
    * Disposes the AudioContext and clears listeners.
    */
