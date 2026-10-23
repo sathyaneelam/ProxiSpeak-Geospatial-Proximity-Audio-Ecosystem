@@ -28,12 +28,22 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(data.status, "success");
   });
 
-  it("GET /health should return 200 and status OK", async () => {
-    const res = await fetch(`${baseUrl}/health`);
-    assert.strictEqual(res.status, 200);
-    const data = await res.json();
-    assert.strictEqual(data.status, "OK");
+  it("GET /health should return 200 and the complete health response", async () => {
+  const res = await fetch(`${baseUrl}/health`);
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(
+    res.headers.get("content-type").includes("application/json"),
+    true
+  );
+
+  const data = await res.json();
+
+  assert.deepStrictEqual(data, {
+    status: "OK",
+    message: "ProxiSpeak server is healthy",
   });
+});
 
   it("POST /api/users without displayName should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
