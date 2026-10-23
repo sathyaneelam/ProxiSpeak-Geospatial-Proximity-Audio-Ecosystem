@@ -23,11 +23,9 @@ describe("REST API Integration Tests", () => {
 
   it("GET / should return 200 and project info", async () => {
     const res = await fetch(`${baseUrl}/`);
-
     assert.strictEqual(res.status, 200);
 
     const data = await res.json();
-
     assert.strictEqual(data.project, "ProxiSpeak");
     assert.strictEqual(data.status, "success");
   });
@@ -42,7 +40,6 @@ describe("REST API Integration Tests", () => {
     );
 
     const data = await res.json();
-
     assert.deepStrictEqual(data, {
       status: "OK",
       message: "ProxiSpeak server is healthy",
@@ -57,9 +54,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
-
     const data = await res.json();
-
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "displayName is required");
   });
@@ -72,9 +67,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
-
     const data = await res.json();
-
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "Office name is required");
   });
@@ -91,9 +84,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
-
     const data = await res.json();
-
     assert.strictEqual(data.status, "error");
   });
 
@@ -105,7 +96,6 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 415);
-
     const data = await res.json();
 
     assert.deepStrictEqual(data, {
@@ -114,9 +104,17 @@ describe("REST API Integration Tests", () => {
     });
   });
 
-  it("GET non-existing route should return 404", async () => {
+  it("GET non-existing route should return a clear 404 error", async () => {
     const res = await fetch(`${baseUrl}/api/non-existent-route`);
 
     assert.strictEqual(res.status, 404);
+    assert.strictEqual(
+      res.headers.get("content-type").includes("application/json"),
+      true
+    );
+
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "Route not found");
   });
 });
