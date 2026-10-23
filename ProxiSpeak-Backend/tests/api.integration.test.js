@@ -1,3 +1,4 @@
+
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const http = require("http");
@@ -22,28 +23,31 @@ describe("REST API Integration Tests", () => {
 
   it("GET / should return 200 and project info", async () => {
     const res = await fetch(`${baseUrl}/`);
+
     assert.strictEqual(res.status, 200);
+
     const data = await res.json();
+
     assert.strictEqual(data.project, "ProxiSpeak");
     assert.strictEqual(data.status, "success");
   });
 
   it("GET /health should return 200 and the complete health response", async () => {
-  const res = await fetch(`${baseUrl}/health`);
+    const res = await fetch(`${baseUrl}/health`);
 
-  assert.strictEqual(res.status, 200);
-  assert.strictEqual(
-    res.headers.get("content-type").includes("application/json"),
-    true
-  );
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(
+      res.headers.get("content-type").includes("application/json"),
+      true
+    );
 
-  const data = await res.json();
+    const data = await res.json();
 
-  assert.deepStrictEqual(data, {
-    status: "OK",
-    message: "ProxiSpeak server is healthy",
+    assert.deepStrictEqual(data, {
+      status: "OK",
+      message: "ProxiSpeak server is healthy",
+    });
   });
-});
 
   it("POST /api/users without displayName should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
@@ -51,8 +55,11 @@ describe("REST API Integration Tests", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ displayName: "   " }),
     });
+
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
+
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "displayName is required");
   });
@@ -63,8 +70,11 @@ describe("REST API Integration Tests", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
+
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
+
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "Office name is required");
   });
@@ -73,24 +83,40 @@ describe("REST API Integration Tests", () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: "invalid-id", x: 100, y: 100 }),
+      body: JSON.stringify({
+        userId: "invalid-id",
+        x: 100,
+        y: 100,
+      }),
     });
+
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
+
     assert.strictEqual(data.status, "error");
   });
 
-  it("POST with non-JSON Content-Type should return 415", async () => {
+  it("POST with non-JSON Content-Type should return a clear 415 error", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: "plain text",
     });
+
     assert.strictEqual(res.status, 415);
+
+    const data = await res.json();
+
+    assert.deepStrictEqual(data, {
+      status: "error",
+      message: "Content-Type must be application/json",
+    });
   });
 
   it("GET non-existing route should return 404", async () => {
     const res = await fetch(`${baseUrl}/api/non-existent-route`);
+
     assert.strictEqual(res.status, 404);
   });
 });
