@@ -8,6 +8,7 @@ class AudioContextManager {
   constructor() {
     /** @type {AudioContext | null} */
     this.context = null;
+
     /** @type {Set<(state: AudioContextState) => void>} */
     this.stateListeners = new Set();
   }
@@ -23,12 +24,14 @@ class AudioContextManager {
         window.webkitAudioContext;
 
       if (!AudioContextClass) {
-        throw new Error('Web Audio API is not supported in this browser environment.');
+        throw new Error(
+          'Web Audio API is not supported in this browser environment.'
+        );
       }
 
       this.context = new AudioContextClass();
 
-      // Listen for state transitions (e.g., suspended -> running)
+      // Listen for state transitions.
       this.context.onstatechange = () => {
         if (this.context) {
           this._notifyStateChange(this.context.state);
@@ -40,7 +43,7 @@ class AudioContextManager {
   }
 
   /**
-   * Current AudioContext state: 'suspended', 'running', or 'closed'.
+   * Returns the current AudioContext state.
    * @returns {AudioContextState | 'uninitialized'}
    */
   getState() {
@@ -48,19 +51,25 @@ class AudioContextManager {
   }
 
   /**
-   * Resumes the AudioContext on user interaction to comply with browser autoplay restrictions.
-   * @returns {Promise<boolean>} True if running, false if failed
+   * Resumes AudioContext to comply with browser autoplay restrictions.
+   * Call this in response to a user interaction when required.
+   * @returns {Promise<boolean>}
    */
   async resumeAudioContext() {
     try {
       const ctx = this.getOrCreateContext();
+
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
+
       this._notifyStateChange(ctx.state);
       return ctx.state === 'running';
     } catch (err) {
-      console.warn('[AudioContextManager] Failed to resume AudioContext:', err);
+      console.warn(
+        '[AudioContextManager] Failed to resume AudioContext:',
+        err
+      );
       return false;
     }
   }
@@ -68,18 +77,28 @@ class AudioContextManager {
   /**
    * Subscribes to AudioContext state changes.
    * @param {(state: AudioContextState) => void} callback
-   * @returns {() => void} Unsubscribe function
+   * @returns {() => void}
    */
   onStateChange(callback) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('A state change callback must be a function.');
+    }
+
     this.stateListeners.add(callback);
+
     if (this.context) {
       callback(this.context.state);
     }
+
     return () => {
       this.stateListeners.delete(callback);
     };
   }
 
+  /**
+   * Notifies listeners of AudioContext state changes.
+   * @param {AudioContextState | 'uninitialized'} state
+   */
   _notifyStateChange(state) {
     for (const listener of this.stateListeners) {
       try {
@@ -91,51 +110,80 @@ class AudioContextManager {
   }
 
   /**
-   * Creates a GainNode with initial gain value.
+   * Creates a GainNode with an initial gain value.
    * @param {number} [initialGain=1.0]
    * @returns {GainNode}
    */
   createGainNode(initialGain = 1.0) {
+    if (!Number.isFinite(initialGain)) {
+      throw new TypeError('Initial gain must be a finite number.');
+    }
+
     const ctx = this.getOrCreateContext();
     const gainNode = ctx.createGain();
+
     gainNode.gain.value = Math.max(0, Math.min(1, initialGain));
+
     return gainNode;
   }
 
   /**
-   * Creates a StereoPannerNode, falling back gracefully if not supported.
+   * Creates a StereoPannerNode with a compatible fallback.
    * @param {number} [initialPan=0.0]
-   * @returns {{ node: StereoPannerNode | PannerNode | GainNode, isStereoPanner: boolean }}
+   * @returns {{
+   *   node: StereoPannerNode | PannerNode | GainNode,
+   *   isStereoPanner: boolean
+   * }}
    */
   createPannerNode(initialPan = 0.0) {
+    if (!Number.isFinite(initialPan)) {
+      throw new TypeError('Initial pan must be a finite number.');
+    }
+
     const ctx = this.getOrCreateContext();
     const panValue = Math.max(-1, Math.min(1, initialPan));
 
     if (typeof ctx.createStereoPanner === 'function') {
       const pannerNode = ctx.createStereoPanner();
       pannerNode.pan.value = panValue;
-      return { node: pannerNode, isStereoPanner: true };
+
+      return {
+        node: pannerNode,
+        isStereoPanner: true,
+      };
     }
 
-    // Graceful fallback for environments lacking StereoPannerNode (e.g. older Safari or test mocks)
+    // Fallback for browsers without StereoPannerNode.
     if (typeof ctx.createPanner === 'function') {
       const panner3D = ctx.createPanner();
+
       panner3D.panningModel = 'equalpower';
       panner3D.distanceModel = 'inverse';
+
       if (typeof panner3D.setPosition === 'function') {
-        panner3D.setPosition(panValue, 0, 1 - Math.abs(panValue));
+        panner3D.setPosition(
+          panValue,
+          0,
+          1 - Math.abs(panValue)
+        );
       }
-      return { node: panner3D, isStereoPanner: false };
+
+      return {
+        node: panner3D,
+        isStereoPanner: false,
+      };
     }
 
-    // Pass-through fallback
-    const passThrough = ctx.createGain();
-    return { node: passThrough, isStereoPanner: false };
+    // Pass-through fallback.
+    return {
+      node: ctx.createGain(),
+      isStereoPanner: false,
+    };
   }
 
   /**
-   * Connects a MediaStream to spatial audio processing chain.
-   * Graph: MediaStreamAudioSourceNode -> GainNode -> StereoPannerNode -> AudioContext.destination
+   * Creates a spatial audio pipeline.
+   * Graph: MediaStream source -> GainNode -> PannerNode -> destination
    *
    * @param {MediaStream} mediaStream
    * @param {number} [initialGain=1.0]
@@ -149,31 +197,35 @@ class AudioContextManager {
    * }}
    */
   createSpatialPipeline(mediaStream, initialGain = 1.0, initialPan = 0.0) {
+    if (!mediaStream) {
+      throw new TypeError('A MediaStream is required.');
+    }
+
     const ctx = this.getOrCreateContext();
     const sourceNode = ctx.createMediaStreamSource(mediaStream);
     const gainNode = this.createGainNode(initialGain);
-    const { node: pannerNode, isStereoPanner } = this.createPannerNode(initialPan);
+    const { node: pannerNode, isStereoPanner } =
+      this.createPannerNode(initialPan);
 
-    // Audio Graph Routing: Source -> Gain -> Panner -> Destination
     sourceNode.connect(gainNode);
     gainNode.connect(pannerNode);
     pannerNode.connect(ctx.destination);
 
+    let disconnected = false;
+
     const disconnect = () => {
-      try {
-        sourceNode.disconnect();
-      } catch (err) {
-        void err;
+      if (disconnected) {
+        return;
       }
-      try {
-        gainNode.disconnect();
-      } catch (err) {
-        void err;
-      }
-      try {
-        pannerNode.disconnect();
-      } catch (err) {
-        void err;
+
+      disconnected = true;
+
+      for (const node of [sourceNode, gainNode, pannerNode]) {
+        try {
+          node.disconnect();
+        } catch {
+          // Ignore nodes that are already disconnected.
+        }
       }
     };
 
@@ -185,15 +237,17 @@ class AudioContextManager {
       disconnect,
     };
   }
+
   /**
    * Smoothly updates a GainNode's volume.
    * Useful for proximity-based audio volume changes.
+   *
    * @param {GainNode} gainNode
    * @param {number} targetGain Volume between 0 and 1
    * @param {number} [duration=0.05] Transition duration in seconds
    */
   setGainSmoothly(gainNode, targetGain, duration = 0.05) {
-    if (!gainNode || !gainNode.gain) {
+    if (!gainNode || !gainNode.gain || !gainNode.context) {
       throw new TypeError('A valid GainNode is required.');
     }
 
@@ -207,7 +261,7 @@ class AudioContextManager {
     const safeVolume = Math.max(0, Math.min(1, volume));
     const safeDuration = Math.max(0, transition);
     const parameter = gainNode.gain;
-    const now = parameter.context.currentTime;
+    const now = gainNode.context.currentTime;
 
     parameter.cancelScheduledValues(now);
 
@@ -222,19 +276,28 @@ class AudioContextManager {
       Math.max(0.001, safeDuration / 3)
     );
   }
+
   /**
    * Disposes the AudioContext and clears listeners.
    */
   async close() {
     this.stateListeners.clear();
-    if (this.context && this.context.state !== 'closed') {
+
+    const ctx = this.context;
+    this.context = null;
+
+    if (ctx && ctx.state !== 'closed') {
+      ctx.onstatechange = null;
+
       try {
-        await this.context.close();
+        await ctx.close();
       } catch (err) {
-        console.warn('[AudioContextManager] Error closing context:', err);
+        console.warn(
+          '[AudioContextManager] Error closing context:',
+          err
+        );
       }
     }
-    this.context = null;
   }
 }
 
