@@ -24,48 +24,83 @@ ProxiSpeak adopts MongoDB's native **Planar `2d` Index**:
 ## 2. Database Schemas
 
 ### 2.1 User Schema (`src/models/User.js`)
-Stores authenticated user profile, presence status, and avatar metadata.
-- `displayName` (String, required, trim)
-- `email` (String, required, unique, lowercase, trim)
-- `avatarColor` (String, default: `#3b82f6`, trim)
-- `avatarUrl` (String, default: `''`, trim)
-- `currentOfficeId` (ObjectId, ref: `'Office'`, default: `null`)
-- `isOnline` (Boolean, default: `false`)
-- `lastActive` (Date, default: `Date.now`)
-- Timestamps: `createdAt`, `updatedAt`
+Stores persistent user accounts, profiles, authentication identity, and baseline presence state.
+- `displayName` (String, required, trim) - Human-readable name displayed above avatar.
+- `email` (String, required, unique, lowercase, trim) - Unique user identifier across sessions.
+- `avatarColor` (String, default: `#3b82f6`, trim) - Hex color code for avatar canvas rendering.
+- `avatarUrl` (String, default: `''`, trim) - Optional custom avatar image URL.
+- `currentOfficeId` (ObjectId, ref: `'Office'`, default: `null`) - Last associated office room.
+- `isOnline` (Boolean, default: `false`) - Global user online/offline status flag.
+- `lastActive` (Date, default: `Date.now`) - Timestamp of user's most recent interaction.
+- Timestamps: `createdAt`, `updatedAt` (automatically maintained by Mongoose).
+
+> **Architectural Separation:** The `User` model represents the *persistent identity* of an individual (account profile and settings across visits), whereas the `LivePosition` model represents their *ephemeral real-time spatial presence* within an active office room.
 
 ### 2.2 Office Schema (`src/models/Office.js`)
-Defines the virtual office room, boundaries, audio threshold, zones, and obstacles.
-- `name` (String, required, trim) - e.g. "ProxiSpeak Headquarters"
-- `code` (String, required, unique, lowercase, indexed) - e.g. `"office-01"`
-- `dimensions`:
-  - `width` (Number, default: `1000`, min: `100`)
-  - `height` (Number, default: `600`, min: `100`)
-- `proximityRadius` (Number, default: `100`, min: `10`, max: `2000`) - Audio cutoff distance in pixels
-- `zones`: Array of `zoneSchema` subdocuments:
-  - `name`, `title`, `subtitle`, `x`, `y`, `w`, `h`, `fill`, `stroke`
-- `obstacles`: Array of `obstacleSchema` subdocuments:
-  - `type` (`desk` | `table` | `sofa` | `coffee` | `counter` | `wall` | `custom`)
-  - `x`, `y`, `w`, `h`, `label`, `isCollidable`
-- `settings` (Map of String)
-- Timestamps: `createdAt`, `updatedAt`
+Defines the virtual office room, canvas boundaries, spatial audio threshold, room zones, and architectural obstacles.
+- `name` (String, required, trim) - Friendly room name, e.g., `"ProxiSpeak Headquarters"`.
+- `code` (String, required, unique, lowercase, trim, indexed) - Slug/identifier used in URLs and room routing, e.g., `"office-01"`.
+- `dimensions` (Object):
+  - `width` (Number, required, default: `1000`, min: `100`) - Canvas horizontal width in pixels.
+  - `height` (Number, required, default: `600`, min: `100`) - Canvas vertical height in pixels.
+- `proximityRadius` (Number, required, default: `100`, min: `10`, max: `2000`) - Planar audio cutoff threshold in pixels ($R$).
+- `zones` (Array of `zoneSchema` subdocuments, default: `[]`):
+  - `name` (String, trim) - Internal zone identifier (e.g., `"workstation-a"`).
+  - `title` (String, required, trim) - Display title (e.g., `"WORKSTATION A"`).
+  - `subtitle` (String, default: `''`, trim) - Optional descriptive subtitle.
+  - `x` (Number, required, min: `0`) - Top-left X coordinate in pixels.
+  - `y` (Number, required, min: `0`) - Top-left Y coordinate in pixels.
+  - `w` (Number, required, min: `1`) - Zone width in pixels.
+  - `h` (Number, required, min: `1`) - Zone height in pixels.
+  - `fill` (String, default: `'#13273a'`) - Background color fill.
+  - `stroke` (String, default: `'#2d5676'`) - Border stroke color.
+- `obstacles` (Array of `obstacleSchema` subdocuments, default: `[]`):
+  - `type` (String, required, enum: `['desk', 'table', 'sofa', 'coffee', 'counter', 'wall', 'custom']`, default: `'desk'`, trim) - Furniture/obstacle category.
+  - `x` (Number, required, min: `0`) - Top-left X coordinate in pixels.
+  - `y` (Number, required, min: `0`) - Top-left Y coordinate in pixels.
+  - `w` (Number, required, min: `1`) - Obstacle width in pixels.
+  - `h` (Number, required, min: `1`) - Obstacle height in pixels.
+  - `label` (String, default: `''`, trim) - Human-readable label (e.g., `"Desk A1"`).
+  - `isCollidable` (Boolean, default: `true`) - Flag indicating whether avatar navigation is blocked.
+- `settings` (Map of String, default: `{}`) - Extensible key-value room configuration.
+- Timestamps: `createdAt`, `updatedAt`.
 
 ### 2.3 LivePosition Schema (`src/models/LivePosition.js`)
-Tracks the real-time position of each active user in a 2D virtual office.
-- `userId` (ObjectId, ref: `'User'`, required, unique) - 1:1 user live position mapping
-- `officeId` (ObjectId, ref: `'Office'`, required, indexed) - Indexed for office-wide presence sync
-- `location` ([Number], length 2: `[x, y]`, required, non-negative finite numbers: $x \ge 0, y \ge 0$)
-- `socketId` (String, indexed) - Socket.io connection ID for fast disconnect cleanup
-- `lastUpdated` (Date, default: `Date.now`)
-- Indexes:
-  - `{ officeId: 1, location: '2d' }` - Compound planar index for fast spatial circular queries
-  - `{ userId: 1 }` (unique) - Enforces single active position per user and fast avatar lookups
-  - `{ officeId: 1 }` - Fast B-tree index for `getOfficePositions` initial room synchronization
-  - `{ socketId: 1 }` - Fast socket disconnect cleanup
+Tracks the real-time position and active session of each connected user within a 2D virtual office canvas.
+- `userId` (ObjectId, ref: `'User'`, required, unique: true) - 1:1 user live position mapping.
+- `officeId` (ObjectId, ref: `'Office'`, required, indexed) - Associates the live avatar with a specific office room.
+- `location` ([Number], length: 2, required) - Planar coordinates `[x, y]` in canvas pixels ($x \ge 0, y \ge 0$).
+- `socketId` (String, default: `null`, indexed) - Active Socket.io connection ID for fast disconnect cleanup.
+- `lastUpdated` (Date, default: `Date.now`) - Timestamp of latest avatar movement or heartbeat.
+- Timestamps: `createdAt`, `updatedAt` (automatically maintained by Mongoose).
 
-> **Coordinate Validation Architecture:**
-> - **Schema / Database Layer:** Enforces structural validity (2-element array, finite numbers, non-null/required) and planar non-negativity ($x \ge 0, y \ge 0$). Because $(0, 0)$ is the canvas origin, negative coordinates are structurally invalid in 2D screen space.
-> - **Service / Signaling Layer:** Enforces office-specific dynamic canvas boundaries ($x \le \text{office.dimensions.width}$, $y \le \text{office.dimensions.height}$). Because offices support configurable dimensions (`dimensions.width` and `height` in `Office.js`), hardcoding canvas dimensions into the `LivePosition` schema would break multi-sized rooms and incur cross-collection query overhead on high-frequency avatar updates.
+#### Indexes
+- `{ officeId: 1, location: '2d' }` - Compound planar index for fast spatial circular queries partitioned by office.
+- `{ userId: 1 }` (unique) - Enforces single active position per user and fast avatar lookups.
+- `{ officeId: 1 }` - Fast B-tree index for `getOfficePositions` initial room synchronization.
+- `{ socketId: 1 }` - Fast B-tree index for socket disconnect cleanup.
+
+#### Key Architectural Guarantees
+
+1. **`userId` Uniqueness (1:1 Active Presence Mapping):**
+   - The `userId` field is configured with `unique: true` and backed by the unique index `{ userId: 1 }`.
+   - **Why this matters:** An avatar cannot physically exist in two different locations or two different offices simultaneously. The unique constraint prevents split-brain presence and ensures that whenever a user moves or rejoins, an atomic upsert (`LivePosition.findOneAndUpdate({ userId }, ...)`) updates their single active position without creating duplicate records.
+
+2. **`officeId` Indexing (Dual-Index Strategy):**
+   - **Single-field index `{ officeId: 1 }`:** Optimized for room-wide membership lookups (`getOfficePositions(officeId)`). When a client joins an office, this index enables instant retrieval of all avatars currently present in the room for initial canvas synchronization.
+   - **Compound planar index `{ officeId: 1, location: '2d' }`:** Combines office partitioning with 2D spatial coordinates. It enables high-throughput spatial circular queries (`$geoWithin` with `$center`) strictly scoped to that office. This guarantees multi-tenant office isolation—users in different rooms never evaluate each other's coordinates, completely preventing cross-room audio leakage.
+
+3. **Planar X/Y Coordinate Representation:**
+   - Positions are stored as a 2-element array `[x, y]` representing pixel coordinates on a flat 2D Cartesian plane where $(0, 0)$ is the top-left canvas origin.
+   - **Schema / Database Layer Validation:** Guarantees that `location` is an array of exactly two finite numbers and enforces planar non-negativity ($x \ge 0, y \ge 0$). Negative coordinates are invalid in screen pixel space.
+   - **Service / Signaling Layer Validation:** Dynamically validates that coordinates do not exceed room boundaries ($x \le \text{office.dimensions.width}$, $y \le \text{office.dimensions.height}$). Because office dimensions are configurable per room (e.g. 1000x600, 1920x1080), hardcoding max bounds into the schema would prevent multi-sized rooms.
+
+### 2.4 How LivePosition Manages Real-Time User Presence
+`LivePosition` functions as a real-time presence collection for currently connected users:
+- **Client Join (`upsertPosition`):** When a user enters an office, `positionService.upsertPosition({ userId, officeId, location, socketId })` creates or updates their active record with starting coordinates (e.g. `[500, 300]`) and records their active `socketId`.
+- **Avatar Movement (`updatePosition`):** As the user navigates, client input triggers `updatePosition(userId, [x, y])`. This updates `location` and sets `lastUpdated` to `Date.now()`.
+- **Office State Synchronization (`getOfficePositions`):** On room load, the server calls `getOfficePositions(officeId)` using the `{ officeId: 1 }` index to broadcast all active avatars to newly connected peers.
+- **Client Disconnection (`removeBySocketId` / `removeUserPosition`):** When a user closes their tab or disconnects, the server executes `removeBySocketId(socket.id)`. The document is removed from `LivePosition`, immediately clearing the avatar from the canvas and proximity calculations so offline users do not persist as ghost avatars.
 
 ---
 
@@ -93,7 +128,7 @@ await updatePosition(userId, [520, 310]);
 ```
 
 ### 3.3 Proximity Peer Query (`getNearbyUsers`)
-Queries live positions in the same office within the configurable pixel radius (default 100px), computes exact Pythagorean pixel distances, and calculates normalized audio volume attenuation ($0.0$ to $1.0$):
+Queries live positions in the same office within the configurable pixel radius (default 100px), computes exact Pythagorean pixel distances, and calculates normalized audio volume attenuation ($0.0$ to $1.0$) and stereo panning:
 ```javascript
 const nearbyPeers = await getNearbyUsers({
   officeId: currentOfficeId,
@@ -103,6 +138,32 @@ const nearbyPeers = await getNearbyUsers({
 });
 ```
 
+#### Query Execution Mechanics
+1. **Spatial Filtering via Planar Index:**
+   Constructs a MongoDB 2D planar circular query:
+   ```javascript
+   const query = {
+     officeId,
+     location: {
+       $geoWithin: {
+         $center: [[x, y], proximityRadius]
+       }
+     }
+   };
+   if (excludeUserId) {
+     query.userId = { $ne: excludeUserId };
+   }
+   ```
+   Leveraging `{ officeId: 1, location: '2d' }`, this limits spatial scanning exclusively to users within the specified office room.
+2. **Profile Population:**
+   Populates associated user details via Mongoose `.populate({ path: 'userId', select: 'displayName email avatarColor avatarUrl isOnline' })`.
+3. **Distance, Gain, and Panning Computation:**
+   - **Euclidean Distance:** $d = \sqrt{(x_2 - x_1)^2 + (y_2 - y_1)^2}$ (rounded to 2 decimal places).
+   - **Gain Attenuation:** Computed via smoothstep Hermite formula ($t = \text{clamp}(d/R, 0, 1)$; $\text{gain} = 1 - (3t^2 - 2t^3)$). `volume` is returned as a backward-compatible alias of `gain`.
+   - **Stereo Panning:** Computed via horizontal displacement ($\text{Pan} = \text{clamp}((x_{\text{peer}} - x_{\text{local}})/R, -1, 1)$).
+4. **Result Ordering:**
+   Results are sorted in ascending order of distance (`a.distance - b.distance`), ensuring the closest peers appear first in the array.
+
 **Returned Data Shape:**
 ```json
 [
@@ -111,12 +172,15 @@ const nearbyPeers = await getNearbyUsers({
     "userId": "660000000000000000000003",
     "socketId": "sock_abc123",
     "displayName": "Alex",
+    "email": "alex@proxispeak.com",
     "avatarColor": "#a78bfa",
     "avatarUrl": "",
     "isOnline": true,
     "location": [530, 340],
     "distance": 50.0,
+    "gain": 0.5,
     "volume": 0.5,
+    "pan": 0.3,
     "lastUpdated": "2026-10-13T12:00:00.000Z"
   }
 ]
