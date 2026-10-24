@@ -18,4 +18,13 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    files: [
+      'src/audio/webrtcPeerManager.js',
+      'src/audio/__tests__/webrtcPeerManager.test.js',
+    ],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
 ])
