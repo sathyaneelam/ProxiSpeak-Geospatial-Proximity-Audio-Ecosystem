@@ -19,12 +19,14 @@ import { WebRTCPeerManager } from './webrtcPeerManager.js';
 import { SocketIOSignalingTransport, BroadcastSignalingTransport } from './signalingAdapter.js';
 import { SharedOfficeSocketTransport } from './sharedOfficeSocketTransport.js';
 
+const EMPTY_OBSTACLES = Object.freeze([]);
+
 export function useProximityAudio({
   userId = 'user_local',
   officeId = 'office_main',
   localPosition = { x: 500, y: 300 },
   peers = [],
-  obstacles = [],
+  obstacles = EMPTY_OBSTACLES,
   earshotRadius = DEFAULT_EARSHOT_RADIUS,
   signalingUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SIGNALING_URL) || 'http://localhost:3000',
   preferredTransport = 'socketio', // Standalone module default; integration uses shared.

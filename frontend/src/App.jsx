@@ -647,7 +647,14 @@ function App() {
       ctx.restore()
     }
 
+    let lastCanvasPaint = 0
     function render(time) {
+      // Limit expensive canvas redraws to approximately 30 FPS.
+      if (lastCanvasPaint && time - lastCanvasPaint < 32) {
+        frame = requestAnimationFrame(render)
+        return
+      }
+      lastCanvasPaint = time
 
       const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0
 
