@@ -77,3 +77,15 @@ test("passes errors onward when response headers were sent", () => {
 
   assert.strictEqual(result.nextError, error);
 });
+test("handles errors without a stack trace", () => {
+  const result = runHandler({
+    status: 500,
+    message: "Unexpected failure",
+  });
+
+  assert.strictEqual(result.statusCode, 500);
+  assert.deepStrictEqual(result.responseBody, {
+    status: "error",
+    message: "Internal server error",
+  });
+});
