@@ -30,6 +30,8 @@ export function useProximityAudio({
 }) {
   const [isAudioActive, setIsAudioActive] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isDeafened, setIsDeafened] = useState(false);
+  const [masterVolume, setMasterVolumeState] = useState(1.0);
   const [audioState, setAudioState] = useState('idle'); // 'idle' | 'requesting' | 'connected' | 'error'
   const [audioError, setAudioError] = useState(null);
   const [audioContextReady, setAudioContextReady] = useState(false);
@@ -176,6 +178,7 @@ export function useProximityAudio({
 
     setIsAudioActive(false);
     setIsMuted(false);
+    setIsDeafened(false);
     setAudioState('idle');
     setPeerMetrics({});
   }, []);
@@ -187,6 +190,33 @@ export function useProximityAudio({
     if (!mediaManagerRef.current) return;
     const nextMuted = mediaManagerRef.current.toggleMute();
     setIsMuted(nextMuted);
+  }, []);
+
+  /**
+   * Mute / Unmute all incoming audio (Deafen)
+   */
+  const toggleDeafen = useCallback(() => {
+    if (!spatialGraphRef.current) return;
+    const nextDeafened = !isDeafened;
+    spatialGraphRef.current.setMuted(nextDeafened);
+    setIsDeafened(nextDeafened);
+  }, [isDeafened]);
+
+  /**
+   * Adjusts master output volume
+   */
+  const setMasterVolume = useCallback((volume) => {
+    if (!spatialGraphRef.current) return;
+    const updated = spatialGraphRef.current.setMasterVolume(volume);
+    setMasterVolumeState(updated);
+  }, []);
+
+  /**
+   * Adjusts individual peer volume multiplier
+   */
+  const setPeerVolume = useCallback((peerId, volume) => {
+    if (!spatialGraphRef.current) return null;
+    return spatialGraphRef.current.setPeerVolume(peerId, volume);
   }, []);
 
   /**
@@ -318,6 +348,8 @@ export function useProximityAudio({
   return {
     isAudioActive,
     isMuted,
+    isDeafened,
+    masterVolume,
     audioState,
     audioError,
     audioContextReady,
@@ -326,6 +358,9 @@ export function useProximityAudio({
     startAudio,
     stopAudio,
     toggleMute,
+    toggleDeafen,
+    setMasterVolume,
+    setPeerVolume,
     toggleToneSimulation,
   };
 }

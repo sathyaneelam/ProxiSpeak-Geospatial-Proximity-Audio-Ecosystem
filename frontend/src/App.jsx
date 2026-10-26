@@ -32,6 +32,7 @@ function App() {
   const {
     isAudioActive,
     isMuted,
+    isDeafened,
     audioState,
     audioError,
     peerMetrics,
@@ -39,6 +40,7 @@ function App() {
     startAudio,
     stopAudio,
     toggleMute,
+    toggleDeafen,
     toggleToneSimulation,
   } = useProximityAudio({
     userId: 'user_player',
@@ -250,7 +252,9 @@ function App() {
             <div>
               <small>AUDIO STATE</small>
               <strong style={{ color: isAudioActive ? '#67e8f9' : '#94a3b8' }}>
-                {isAudioActive ? (isMuted ? 'MUTED' : 'MICROPHONE LIVE') : 'STANDBY'}
+                {isAudioActive
+                  ? `${isMuted ? 'MIC MUTED' : 'MIC LIVE'}${isDeafened ? ' • DEAFENED' : ''}`
+                  : 'STANDBY'}
               </strong>
             </div>
           </div>
@@ -329,7 +333,15 @@ function App() {
                     className={`btn-audio-action ${isMuted ? 'btn-unmute' : 'btn-mute'}`}
                     onClick={toggleMute}
                   >
-                    {isMuted ? '🔇 Unmute Microphone' : '🎙️ Mute Microphone'}
+                    {isMuted ? '🔇 Unmute Mic' : '🎙️ Mute Mic'}
+                  </button>
+                  <button
+                    id="btn-toggle-deafen"
+                    className={`btn-audio-action ${isDeafened ? 'btn-undeafen' : 'btn-deafen'}`}
+                    onClick={toggleDeafen}
+                    title={isDeafened ? 'Resume incoming spatial audio' : 'Mute all incoming spatial audio'}
+                  >
+                    {isDeafened ? '🔊 Undeafen' : '🔇 Deafen'}
                   </button>
                   <button
                     id="btn-stop-audio"

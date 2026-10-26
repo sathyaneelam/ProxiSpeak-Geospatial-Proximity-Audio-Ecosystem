@@ -16,25 +16,48 @@ import {
 export class SpatialAudioGraph {
   constructor(options = {}) {
     this.audioContext = null;
-    this.peerNodes = new Map(); // peerId -> { source, gainNode, pannerNode, dummyAudio, lastGain, lastPan, lastDistance }
+    this.masterGainNode = null;
+    this.masterVolume =
+      typeof options.masterVolume === 'number' && Number.isFinite(options.masterVolume)
+        ? Math.max(0.0, Math.min(1.0, options.masterVolume))
+        : 1.0;
+    this.peerNodes = new Map(); // peerId -> { source, gainNode, pannerNode, dummyAudio, lastGain, lastPan, lastDistance, lastObstacleAttenuation, volume }
     this.smoothingTimeConstant = options.smoothingTimeConstant || 0.05; // 50ms smooth transition to prevent clicks
     this.gainCurve = options.gainCurve || 'smooth';
-    this.isMuted = false;
+    this.isMuted = Boolean(options.isMuted);
   }
 
   /**
-   * Lazily initializes or returns the existing AudioContext.
+   * Lazily initializes or returns the existing AudioContext and configures the master gain pipeline.
+   * Pipeline: Peer PannerNodes -> Master GainNode -> AudioContext.destination
    * @returns {AudioContext}
    */
   getAudioContext() {
     if (!this.audioContext) {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const AudioCtx =
+        (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) ||
+        (typeof globalThis !== 'undefined' && (globalThis.AudioContext || globalThis.webkitAudioContext));
       if (!AudioCtx) {
         throw new Error('Web Audio API is not supported in this browser environment.');
       }
       this.audioContext = new AudioCtx();
+
+      // Configure master output gain bus
+      this.masterGainNode = this.audioContext.createGain();
+      const initialMasterGain = this.isMuted ? 0.0 : this.masterVolume;
+      this.masterGainNode.gain.setValueAtTime(initialMasterGain, this.audioContext.currentTime);
+      this.masterGainNode.connect(this.audioContext.destination);
     }
     return this.audioContext;
+  }
+
+  /**
+   * Returns the master GainNode instance, initializing AudioContext if necessary.
+   * @returns {GainNode}
+   */
+  getMasterGainNode() {
+    this.getAudioContext();
+    return this.masterGainNode;
   }
 
   /**
@@ -53,13 +76,15 @@ export class SpatialAudioGraph {
    * Adds a remote peer's MediaStream into the spatial audio graph.
    * 
    * Pipeline:
-   *   MediaStreamSourceNode -> GainNode (distance attenuation) -> StereoPannerNode (left/right pan) -> destination
+   *   MediaStreamSourceNode -> GainNode (distance & obstacle attenuation) -> StereoPannerNode (left/right pan) -> MasterGainNode -> destination
    * 
    * @param {string} peerId
    * @param {MediaStream} stream
    * @param {{ x: number, y: number }} [peerPos]
    * @param {{ x: number, y: number }} [localPos]
    * @param {number} [radius]
+   * @param {Array<Object>} [obstacles]
+   * @returns {{ gain: number, pan: number, distance: number, obstacleAttenuation: number, volume: number } | undefined}
    */
   addPeerStream(peerId, stream, peerPos = { x: 0, y: 0 }, localPos = { x: 0, y: 0 }, radius = DEFAULT_EARSHOT_RADIUS, obstacles = []) {
     if (!stream || !stream.getAudioTracks().length) {
@@ -71,6 +96,7 @@ export class SpatialAudioGraph {
     this.removePeer(peerId);
 
     const ctx = this.getAudioContext();
+    const master = this.getMasterGainNode();
 
     // Workaround for Chromium WebRTC audio pipeline bug (Chromium #687574):
     // In Chromium, creating a MediaStreamAudioSourceNode from a remote WebRTC stream
@@ -97,25 +123,27 @@ export class SpatialAudioGraph {
       pannerNode.pan.value = 0;
     }
 
-    // Connect nodes
+    // Connect nodes into master output bus
     if (pannerNode) {
       source.connect(gainNode);
       gainNode.connect(pannerNode);
-      pannerNode.connect(ctx.destination);
+      pannerNode.connect(master);
     } else {
       source.connect(gainNode);
-      gainNode.connect(ctx.destination);
+      gainNode.connect(master);
     }
 
-    // Initialize initial spatial attenuation, obstacle sound blocking, and panning
+    // Initialize spatial attenuation, obstacle sound blocking, peer volume, and panning
     const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
     const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
     const obstacleFactor = computeObstacleAttenuation(localPos, peerPos, obstacles);
-    const initialGain = this.isMuted ? 0.0 : Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
+    const spatialGain = Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
+    const peerVolume = 1.0;
+    const effectiveGain = Math.max(0.0, Math.min(1.0, spatialGain * peerVolume));
     const initialPan = computeStereoPan(localPos.x, peerPos.x, radius);
 
     const now = ctx.currentTime;
-    gainNode.gain.setValueAtTime(initialGain, now);
+    gainNode.gain.setValueAtTime(effectiveGain, now);
     if (pannerNode) {
       pannerNode.pan.setValueAtTime(initialPan, now);
     }
@@ -125,13 +153,15 @@ export class SpatialAudioGraph {
       gainNode,
       pannerNode,
       dummyAudio,
-      lastGain: initialGain,
+      spatialGain,
+      lastGain: effectiveGain,
       lastPan: initialPan,
       lastDistance: distance,
       lastObstacleAttenuation: obstacleFactor,
+      volume: peerVolume,
     });
 
-    return { gain: initialGain, pan: initialPan, distance, obstacleAttenuation: obstacleFactor };
+    return { gain: effectiveGain, spatialGain, pan: initialPan, distance, obstacleAttenuation: obstacleFactor, volume: peerVolume };
   }
 
   /**
@@ -143,7 +173,7 @@ export class SpatialAudioGraph {
    * @param {{ x: number, y: number }} localPos
    * @param {number} [radius]
    * @param {Array<Object>} [obstacles]
-   * @returns {{ gain: number, pan: number, distance: number, obstacleAttenuation: number } | null}
+   * @returns {{ gain: number, pan: number, distance: number, obstacleAttenuation: number, volume: number } | null}
    */
   updatePeerSpatial(peerId, peerPos, localPos, radius = DEFAULT_EARSHOT_RADIUS, obstacles = []) {
     const peerData = this.peerNodes.get(peerId);
@@ -153,65 +183,148 @@ export class SpatialAudioGraph {
     const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
     const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
     const obstacleFactor = computeObstacleAttenuation(localPos, peerPos, obstacles);
-    const targetGain = this.isMuted ? 0.0 : Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
+    const spatialGain = Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
+    const peerVol = peerData.volume ?? 1.0;
+    const effectiveGain = Math.max(0.0, Math.min(1.0, spatialGain * peerVol));
     const targetPan = computeStereoPan(localPos.x, peerPos.x, radius);
 
     const now = ctx.currentTime;
 
     // Use setTargetAtTime for smooth exponential transition without clicks
     try {
-      peerData.gainNode.gain.setTargetAtTime(targetGain, now, this.smoothingTimeConstant);
+      peerData.gainNode.gain.setTargetAtTime(effectiveGain, now, this.smoothingTimeConstant);
       if (peerData.pannerNode) {
         peerData.pannerNode.pan.setTargetAtTime(targetPan, now, this.smoothingTimeConstant);
       }
     } catch {
       // Fallback for mock environments
-      peerData.gainNode.gain.value = targetGain;
+      peerData.gainNode.gain.value = effectiveGain;
       if (peerData.pannerNode) {
         peerData.pannerNode.pan.value = targetPan;
       }
     }
 
-    peerData.lastGain = targetGain;
+    peerData.spatialGain = spatialGain;
+    peerData.lastGain = effectiveGain;
     peerData.lastPan = targetPan;
     peerData.lastDistance = distance;
     peerData.lastObstacleAttenuation = obstacleFactor;
 
-    return { gain: targetGain, pan: targetPan, distance, obstacleAttenuation: obstacleFactor };
+    return { gain: effectiveGain, spatialGain, pan: targetPan, distance, obstacleAttenuation: obstacleFactor, volume: peerVol };
+  }
+
+  /**
+   * Mutes or unmutes master incoming audio (deafen).
+   * Ramps the masterGainNode smoothly without losing individual peer spatial states.
+   * @param {boolean} muted
+   */
+  setMuted(muted) {
+    this.isMuted = Boolean(muted);
+    const ctx = this.getAudioContext();
+    const targetGain = this.isMuted ? 0.0 : this.masterVolume;
+    const now = ctx.currentTime;
+
+    if (this.masterGainNode) {
+      try {
+        this.masterGainNode.gain.setTargetAtTime(targetGain, now, this.smoothingTimeConstant);
+      } catch {
+        this.masterGainNode.gain.value = targetGain;
+      }
+    }
+  }
+
+  /**
+   * Sets master output volume level.
+   * @param {number} volume - Volume clamped between 0.0 and 1.0
+   * @returns {number} The updated master volume
+   */
+  setMasterVolume(volume) {
+    if (typeof volume !== 'number' || Number.isNaN(volume)) {
+      return this.masterVolume;
+    }
+    this.masterVolume = Math.max(0.0, Math.min(1.0, volume));
+    if (!this.isMuted && this.masterGainNode) {
+      const ctx = this.getAudioContext();
+      const now = ctx.currentTime;
+      try {
+        this.masterGainNode.gain.setTargetAtTime(this.masterVolume, now, this.smoothingTimeConstant);
+      } catch {
+        this.masterGainNode.gain.value = this.masterVolume;
+      }
+    }
+    return this.masterVolume;
+  }
+
+  /**
+   * Returns the current master output volume.
+   * @returns {number}
+   */
+  getMasterVolume() {
+    return this.masterVolume;
+  }
+
+  /**
+   * Returns whether master audio is currently muted (deafened).
+   * @returns {boolean}
+   */
+  isMasterMuted() {
+    return this.isMuted;
+  }
+
+  /**
+   * Adjusts the volume multiplier for an individual peer.
+   * Calculates effective gain strictly as spatialGain × peer.volume to prevent compounding.
+   * @param {string} peerId
+   * @param {number} volume - Multiplier clamped between 0.0 and 2.0
+   * @returns {number | null}
+   */
+  setPeerVolume(peerId, volume) {
+    const peerData = this.peerNodes.get(peerId);
+    if (!peerData) return null;
+
+    if (typeof volume !== 'number' || Number.isNaN(volume)) {
+      return peerData.volume;
+    }
+
+    peerData.volume = Math.max(0.0, Math.min(2.0, volume));
+    const ctx = this.getAudioContext();
+    const spatialGain = peerData.spatialGain ?? 1.0;
+    const effectiveGain = Math.max(0.0, Math.min(1.0, spatialGain * peerData.volume));
+
+    try {
+      peerData.gainNode.gain.setTargetAtTime(effectiveGain, ctx.currentTime, this.smoothingTimeConstant);
+    } catch {
+      peerData.gainNode.gain.value = effectiveGain;
+    }
+    peerData.lastGain = effectiveGain;
+    return peerData.volume;
+  }
+
+  /**
+   * Gets an individual peer's volume multiplier.
+   * @param {string} peerId
+   * @returns {number | null}
+   */
+  getPeerVolume(peerId) {
+    const peerData = this.peerNodes.get(peerId);
+    return peerData ? peerData.volume : null;
   }
 
   /**
    * Retrieves current spatial audio metrics for a peer.
    * @param {string} peerId
+   * @returns {{ gain: number, spatialGain?: number, pan: number, distance: number, obstacleAttenuation?: number, volume?: number } | null}
    */
-  /**
-   * Mutes or unmutes all connected remote peers.
-   * @param {boolean} muted
-   */
-  setMuted(muted) {
-    this.isMuted = Boolean(muted);
-
-    const context = this.getAudioContext();
-
-    for (const peerData of this.peerNodes.values()) {
-      const targetGain = this.isMuted ? 0 : (peerData.lastGain ?? 0);
-
-      peerData.gainNode.gain.setTargetAtTime(
-        targetGain,
-        context.currentTime,
-        this.smoothingTimeConstant
-      );
-
-      peerData.lastGain = targetGain;
-    }
-  }
   getPeerSpatialMetrics(peerId) {
     const peerData = this.peerNodes.get(peerId);
     if (!peerData) return null;
     return {
       gain: peerData.lastGain,
+      spatialGain: peerData.spatialGain,
       pan: peerData.lastPan,
       distance: peerData.lastDistance,
+      obstacleAttenuation: peerData.lastObstacleAttenuation,
+      volume: peerData.volume,
     };
   }
 
@@ -241,13 +354,22 @@ export class SpatialAudioGraph {
   }
 
   /**
-   * Completely tears down all nodes and closes the AudioContext.
+   * Completely tears down all nodes, disconnects master gain, and closes the AudioContext.
    */
   destroy() {
-    for (const peerId of this.peerNodes.keys()) {
+    for (const peerId of Array.from(this.peerNodes.keys())) {
       this.removePeer(peerId);
     }
     this.peerNodes.clear();
+
+    if (this.masterGainNode) {
+      try {
+        this.masterGainNode.disconnect();
+      } catch (err) {
+        console.warn('[SpatialAudioGraph] Master gain disconnect warning:', err);
+      }
+      this.masterGainNode = null;
+    }
 
     if (this.audioContext) {
       try {

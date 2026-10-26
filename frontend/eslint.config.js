@@ -21,7 +21,7 @@ export default defineConfig([
   {
     files: [
       'src/audio/webrtcPeerManager.js',
-      'src/audio/__tests__/webrtcPeerManager.test.js',
+      'src/audio/__tests__/*.test.js',
     ],
     languageOptions: {
       globals: { ...globals.browser, ...globals.node },

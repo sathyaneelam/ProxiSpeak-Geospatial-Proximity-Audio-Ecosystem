@@ -405,6 +405,26 @@
   background: rgba(239, 68, 68, 0.25);
 }
 
+.btn-deafen {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+.btn-deafen:hover {
+  background: #334155;
+}
+
+.btn-undeafen {
+  background: rgba(236, 72, 153, 0.15);
+  color: #f472b6;
+  border-color: rgba(236, 72, 153, 0.4);
+}
+
+.btn-undeafen:hover {
+  background: rgba(236, 72, 153, 0.25);
+}
+
 .audio-demo-divider {
   height: 1px;
   background: #20334a;
