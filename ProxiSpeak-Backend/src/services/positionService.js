@@ -88,6 +88,51 @@ function validateCoordinates(location) {
 }
 
 /**
+ * Check if a planar 2D coordinate [x, y] is non-negative and within office dimensions.
+ *
+ * @param {any} location - [x, y] coordinates
+ * @param {object} [officeOrDimensions] - Office document or dimensions object ({ width, height })
+ * @returns {boolean} True if coordinates are finite, non-negative, and <= room bounds
+ */
+function isPositionWithinOffice(location, officeOrDimensions = { width: 1000, height: 600 }) {
+  try {
+    const [x, y] = validateCoordinates(location);
+    if (x < 0 || y < 0) return false;
+    const dims = officeOrDimensions?.dimensions || officeOrDimensions || {};
+    const width = typeof dims.width === 'number' && dims.width > 0 ? dims.width : 1000;
+    const height = typeof dims.height === 'number' && dims.height > 0 ? dims.height : 600;
+    return x <= width && y <= height;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate that a planar coordinate [x, y] is non-negative and within office dimensions.
+ *
+ * @param {any} location - [x, y] coordinates
+ * @param {object} [officeOrDimensions] - Office document or dimensions object ({ width, height })
+ * @returns {[number, number]} Validated coordinate pair
+ * @throws {Error} Descriptive error if coordinates are invalid, negative, or exceed office boundaries
+ */
+function validatePositionInOffice(location, officeOrDimensions = { width: 1000, height: 600 }) {
+  const [x, y] = validateCoordinates(location);
+  if (x < 0 || y < 0) {
+    throw new Error(`Coordinates must be non-negative planar canvas pixels: received [${x}, ${y}]`);
+  }
+  const dims = officeOrDimensions?.dimensions || officeOrDimensions || {};
+  const width = typeof dims.width === 'number' && dims.width > 0 ? dims.width : 1000;
+  const height = typeof dims.height === 'number' && dims.height > 0 ? dims.height : 600;
+  if (x > width) {
+    throw new Error(`X coordinate (${x}) exceeds office width (${width})`);
+  }
+  if (y > height) {
+    throw new Error(`Y coordinate (${y}) exceeds office height (${height})`);
+  }
+  return [x, y];
+}
+
+/**
  * Upsert or update a user's live position in a virtual office.
  * Ensures an existing user's LivePosition is updated rather than creating duplicate documents.
  * Skips redundant database writes if position, office, and socket have not changed.
@@ -401,6 +446,8 @@ module.exports = {
   calculateStereoPan,
   isWithinEarshot,
   validateCoordinates,
+  isPositionWithinOffice,
+  validatePositionInOffice,
   upsertPosition,
   updatePosition,
   getUserPosition,
@@ -409,4 +456,5 @@ module.exports = {
   removeUserPosition,
   removeBySocketId
 };
+
 

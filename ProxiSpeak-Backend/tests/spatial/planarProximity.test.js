@@ -1,8 +1,17 @@
-const { describe, it } = require('node:test');
+const { describe, it, mock } = require('node:test');
 const assert = require('node:assert');
+const mongoose = require('mongoose');
+const LivePosition = require('../../src/models/LivePosition');
+const Office = require('../../src/models/Office');
 const {
   calculateDistance,
-  calculateAudioVolume
+  calculateAudioVolume,
+  calculateStereoPan,
+  isWithinEarshot,
+  validateCoordinates,
+  isPositionWithinOffice,
+  validatePositionInOffice,
+  getNearbyUsers
 } = require('../../src/services/positionService');
 
 describe('Planar 2D Geometry & Proximity Calculation', () => {
@@ -100,7 +109,6 @@ describe('Planar 2D Geometry & Proximity Calculation', () => {
   });
 
   describe('Stereo Panning (Pan = clamp(dx/100, -1, 1))', () => {
-    const { calculateStereoPan, isWithinEarshot } = require('../../src/services/positionService');
     const RADIUS = 100;
 
     it('should compute full left (-1.0), center (0.0), and full right (+1.0) pan', () => {
@@ -130,4 +138,537 @@ describe('Planar 2D Geometry & Proximity Calculation', () => {
       assert.strictEqual(isWithinEarshot(-1, RADIUS), false);
     });
   });
+
+  // =========================================================================
+  // Planar LivePosition Coordinates & Office Boundary Constraints (1 to 14)
+  // =========================================================================
+  describe('Planar LivePosition Coordinates & Office Boundary Constraints', () => {
+    const defaultOffice = { dimensions: { width: 1000, height: 600 } };
+    const dummyUserId = new mongoose.Types.ObjectId();
+    const dummyOfficeId = new mongoose.Types.ObjectId();
+
+    it('1. should validate a position completely inside an office', async () => {
+      const loc = [500, 300];
+      const valid = validatePositionInOffice(loc, defaultOffice);
+      assert.deepStrictEqual(valid, [500, 300]);
+      assert.strictEqual(isPositionWithinOffice(loc, defaultOffice), true);
+
+      // Schema model validation
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: loc
+      });
+      await posDoc.validate();
+      assert.deepStrictEqual(posDoc.location, [500, 300]);
+    });
+
+    it('2. should accept a position at x = 0 (left canvas edge boundary)', async () => {
+      const loc = [0, 300];
+      const valid = validatePositionInOffice(loc, defaultOffice);
+      assert.deepStrictEqual(valid, [0, 300]);
+      assert.strictEqual(isPositionWithinOffice(loc, defaultOffice), true);
+
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: loc
+      });
+      await posDoc.validate();
+      assert.deepStrictEqual(posDoc.location, [0, 300]);
+    });
+
+    it('3. should accept a position at y = 0 (top canvas edge boundary)', async () => {
+      const loc = [500, 0];
+      const valid = validatePositionInOffice(loc, defaultOffice);
+      assert.deepStrictEqual(valid, [500, 0]);
+      assert.strictEqual(isPositionWithinOffice(loc, defaultOffice), true);
+
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: loc
+      });
+      await posDoc.validate();
+      assert.deepStrictEqual(posDoc.location, [500, 0]);
+    });
+
+    it('4. should accept a position at the maximum office width', async () => {
+      const loc = [1000, 300];
+      const valid = validatePositionInOffice(loc, defaultOffice);
+      assert.deepStrictEqual(valid, [1000, 300]);
+      assert.strictEqual(isPositionWithinOffice(loc, defaultOffice), true);
+
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: loc
+      });
+      await posDoc.validate();
+      assert.deepStrictEqual(posDoc.location, [1000, 300]);
+    });
+
+    it('5. should accept a position at the maximum office height', async () => {
+      const loc = [500, 600];
+      const valid = validatePositionInOffice(loc, defaultOffice);
+      assert.deepStrictEqual(valid, [500, 600]);
+      assert.strictEqual(isPositionWithinOffice(loc, defaultOffice), true);
+
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: loc
+      });
+      await posDoc.validate();
+      assert.deepStrictEqual(posDoc.location, [500, 600]);
+    });
+
+    it('6. should accept a position at the bottom-right corner boundary [1000, 600] and origin [0, 0]', async () => {
+      const corner = [1000, 600];
+      const origin = [0, 0];
+
+      assert.deepStrictEqual(validatePositionInOffice(corner, defaultOffice), [1000, 600]);
+      assert.strictEqual(isPositionWithinOffice(corner, defaultOffice), true);
+
+      assert.deepStrictEqual(validatePositionInOffice(origin, defaultOffice), [0, 0]);
+      assert.strictEqual(isPositionWithinOffice(origin, defaultOffice), true);
+
+      const cornerDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: corner
+      });
+      await cornerDoc.validate();
+      assert.deepStrictEqual(cornerDoc.location, [1000, 600]);
+    });
+
+    it('7. should reject negative X coordinates', async () => {
+      const negativeX = [-1, 300];
+      assert.strictEqual(isPositionWithinOffice(negativeX, defaultOffice), false);
+      assert.throws(
+        () => validatePositionInOffice(negativeX, defaultOffice),
+        /Coordinates must be non-negative/
+      );
+
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: negativeX
+      });
+      await assert.rejects(
+        async () => await posDoc.validate(),
+        (err) => err.errors && Boolean(err.errors.location)
+      );
+    });
+
+    it('8. should reject negative Y coordinates', async () => {
+      const negativeY = [500, -1];
+      assert.strictEqual(isPositionWithinOffice(negativeY, defaultOffice), false);
+      assert.throws(
+        () => validatePositionInOffice(negativeY, defaultOffice),
+        /Coordinates must be non-negative/
+      );
+
+      const posDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: negativeY
+      });
+      await assert.rejects(
+        async () => await posDoc.validate(),
+        (err) => err.errors && Boolean(err.errors.location)
+      );
+    });
+
+    it('9. should reject coordinates beyond office width', () => {
+      const beyondWidth = [1001, 300];
+      assert.strictEqual(isPositionWithinOffice(beyondWidth, defaultOffice), false);
+      assert.throws(
+        () => validatePositionInOffice(beyondWidth, defaultOffice),
+        /X coordinate \(1001\) exceeds office width \(1000\)/
+      );
+    });
+
+    it('10. should reject coordinates beyond office height', () => {
+      const beyondHeight = [500, 601];
+      assert.strictEqual(isPositionWithinOffice(beyondHeight, defaultOffice), false);
+      assert.throws(
+        () => validatePositionInOffice(beyondHeight, defaultOffice),
+        /Y coordinate \(601\) exceeds office height \(600\)/
+      );
+    });
+
+    it('11. should reject invalid/non-numeric coordinates', async () => {
+      const invalidServiceCases = [
+        ['500', 300],
+        [NaN, 300],
+        [500, Infinity],
+        ['abc', 'def']
+      ];
+
+      for (const loc of invalidServiceCases) {
+        assert.strictEqual(isPositionWithinOffice(loc, defaultOffice), false);
+        assert.throws(
+          () => validateCoordinates(loc),
+          /Coordinates x and y must be finite numbers/
+        );
+        assert.throws(
+          () => validatePositionInOffice(loc, defaultOffice),
+          /Coordinates x and y must be finite numbers/
+        );
+      }
+
+      const invalidSchemaCases = [
+        ['abc', 300],
+        [NaN, 300],
+        [500, Infinity]
+      ];
+      for (const loc of invalidSchemaCases) {
+        const posDoc = new LivePosition({
+          userId: dummyUserId,
+          officeId: dummyOfficeId,
+          location: loc
+        });
+        await assert.rejects(
+          async () => await posDoc.validate(),
+          (err) => Boolean(err)
+        );
+      }
+    });
+
+    it('12. should reject missing coordinates', async () => {
+      assert.strictEqual(isPositionWithinOffice(null), false);
+      assert.strictEqual(isPositionWithinOffice(undefined), false);
+
+      assert.throws(() => validateCoordinates(null), /Location must be a 2-element array/);
+      assert.throws(() => validateCoordinates(undefined), /Location must be a 2-element array/);
+      assert.throws(() => validatePositionInOffice(null), /Location must be a 2-element array/);
+
+      const nullDoc = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: null
+      });
+      await assert.rejects(
+        async () => await nullDoc.validate(),
+        (err) => err.errors && Boolean(err.errors.location)
+      );
+    });
+
+    it('13. should reject incorrect location array length', async () => {
+      const incorrectLengths = [[], [500], [500, 300, 100]];
+
+      for (const loc of incorrectLengths) {
+        assert.strictEqual(isPositionWithinOffice(loc), false);
+        assert.throws(
+          () => validateCoordinates(loc),
+          /Location must be a 2-element array/
+        );
+        assert.throws(
+          () => validatePositionInOffice(loc),
+          /Location must be a 2-element array/
+        );
+
+        const posDoc = new LivePosition({
+          userId: dummyUserId,
+          officeId: dummyOfficeId,
+          location: loc
+        });
+        await assert.rejects(
+          async () => await posDoc.validate(),
+          (err) => err.errors && Boolean(err.errors.location)
+        );
+      }
+    });
+
+    it('14. should validate positions against different office dimensions', () => {
+      // Large Auditorium: 1920x1080
+      const largeOffice = { dimensions: { width: 1920, height: 1080 } };
+      const largePos = [1500, 900];
+
+      assert.strictEqual(isPositionWithinOffice(largePos, largeOffice), true);
+      assert.deepStrictEqual(validatePositionInOffice(largePos, largeOffice), [1500, 900]);
+
+      // Same large position exceeds default 1000x600 room
+      assert.strictEqual(isPositionWithinOffice(largePos, defaultOffice), false);
+      assert.throws(
+        () => validatePositionInOffice(largePos, defaultOffice),
+        /X coordinate \(1500\) exceeds office width \(1000\)/
+      );
+
+      // Compact Huddle Room: 400x300
+      const huddleOffice = { dimensions: { width: 400, height: 300 } };
+      assert.strictEqual(isPositionWithinOffice([350, 250], huddleOffice), true);
+      assert.strictEqual(isPositionWithinOffice([450, 250], huddleOffice), false);
+      assert.strictEqual(isPositionWithinOffice([350, 350], huddleOffice), false);
+      assert.throws(
+        () => validatePositionInOffice([450, 250], huddleOffice),
+        /X coordinate \(450\) exceeds office width \(400\)/
+      );
+      assert.throws(
+        () => validatePositionInOffice([350, 350], huddleOffice),
+        /Y coordinate \(350\) exceeds office height \(300\)/
+      );
+    });
+  });
+
+  // =========================================================================
+  // Office Isolation & Spatial Proximity Boundaries (15 to 20)
+  // =========================================================================
+  describe('Office Isolation & Proximity Boundary Queries', () => {
+    const officeA = new mongoose.Types.ObjectId();
+    const officeB = new mongoose.Types.ObjectId();
+    const pivotUserId = new mongoose.Types.ObjectId();
+    const pivotLocation = [500, 300];
+    const PROXIMITY_RADIUS = 100;
+
+    // Multi-user dataset covering multi-office positions and proximity thresholds
+    const mockPositions = [
+      // Office A users
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: pivotUserId, displayName: 'Pivot User' },
+        officeId: officeA,
+        location: [500, 300]
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Alice (Close)' },
+        officeId: officeA,
+        location: [520, 300] // dx = 20, dy = 0 => 20px
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Bob (Mid)' },
+        officeId: officeA,
+        location: [530, 340] // dx = 30, dy = 40 => 50px
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Carol (Boundary In)' },
+        officeId: officeA,
+        location: [500, 395] // dx = 0, dy = 95 => 95.0px
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'David (Exact Boundary)' },
+        officeId: officeA,
+        location: [500, 400] // dx = 0, dy = 100 => 100.0px
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Elena (Boundary Out)' },
+        officeId: officeA,
+        location: [500, 405] // dx = 0, dy = 105 => 105.0px
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Frank (Far Outside)' },
+        officeId: officeA,
+        location: [620, 390] // dx = 120, dy = 90 => 150px
+      },
+      // Office B users (Different office)
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Grace (Office B Identical Coords)' },
+        officeId: officeB,
+        location: [500, 300] // Identical coords to pivot, but in Office B!
+      },
+      {
+        _id: new mongoose.Types.ObjectId(),
+        userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Harry (Office B 10px Away)' },
+        officeId: officeB,
+        location: [506, 308] // 10px away from pivot, but in Office B!
+      }
+    ];
+
+    function setupSpatialMock(dataset = mockPositions) {
+      return mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              return dataset.filter((doc) => {
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  return false;
+                }
+                if (query.userId?.$ne && String(doc.userId?._id || doc.userId) === String(query.userId.$ne)) {
+                  return false;
+                }
+                if (query.location?.$geoWithin?.$center) {
+                  const [[cx, cy], maxRadius] = query.location.$geoWithin.$center;
+                  const [x, y] = doc.location;
+                  const distance = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+                  if (distance > maxRadius) {
+                    return false;
+                  }
+                }
+                return true;
+              });
+            }
+          })
+        };
+      });
+    }
+
+    it('15. should enforce strict office isolation even when coordinates across offices are identical', async () => {
+      const spatialMock = setupSpatialMock();
+      try {
+        const nearbyOfficeA = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: PROXIMITY_RADIUS,
+          excludeUserId: pivotUserId
+        });
+
+        // Grace is at [500, 300] (0px from pivot), but in Office B
+        const hasGrace = nearbyOfficeA.some((u) => u.displayName.includes('Grace'));
+        assert.strictEqual(hasGrace, false, 'Office B user with identical coordinates must be excluded from Office A');
+
+        // Querying Office B should return Grace
+        const nearbyOfficeB = await getNearbyUsers({
+          officeId: officeB,
+          location: pivotLocation,
+          radius: PROXIMITY_RADIUS
+        });
+        assert.ok(nearbyOfficeB.some((u) => u.displayName.includes('Grace')), 'Office B query should find Grace');
+      } finally {
+        spatialMock.mock.restore();
+      }
+    });
+
+    it('16. should strictly filter out positions belonging to another office', async () => {
+      const spatialMock = setupSpatialMock();
+      try {
+        const nearby = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: PROXIMITY_RADIUS,
+          excludeUserId: pivotUserId
+        });
+
+        const hasOfficeBUsers = nearby.some(
+          (u) => u.displayName.includes('Grace') || u.displayName.includes('Harry')
+        );
+        assert.strictEqual(hasOfficeBUsers, false, 'No Office B users should leak into Office A results');
+      } finally {
+        spatialMock.mock.restore();
+      }
+    });
+
+    it('17. should return multiple users in the same office sorted by ascending distance', async () => {
+      const spatialMock = setupSpatialMock();
+      try {
+        const nearby = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: PROXIMITY_RADIUS,
+          excludeUserId: pivotUserId
+        });
+
+        // Should return Alice (20px), Bob (50px), Carol (95.0px), David (100.0px)
+        assert.strictEqual(nearby.length, 4, 'Should find exactly 4 users within 100px in Office A');
+        assert.strictEqual(nearby[0].displayName, 'Alice (Close)');
+        assert.strictEqual(nearby[0].distance, 20.0);
+
+        assert.strictEqual(nearby[1].displayName, 'Bob (Mid)');
+        assert.strictEqual(nearby[1].distance, 50.0);
+
+        assert.strictEqual(nearby[2].displayName, 'Carol (Boundary In)');
+        assert.strictEqual(nearby[2].distance, 95.0);
+
+        assert.strictEqual(nearby[3].displayName, 'David (Exact Boundary)');
+        assert.strictEqual(nearby[3].distance, 100.0);
+      } finally {
+        spatialMock.mock.restore();
+      }
+    });
+
+    it('18. should compute accurate planar Euclidean distances for all nearby users', async () => {
+      const spatialMock = setupSpatialMock();
+      try {
+        const nearby = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: PROXIMITY_RADIUS,
+          excludeUserId: pivotUserId
+        });
+
+        const alice = nearby.find((u) => u.displayName.includes('Alice'));
+        const bob = nearby.find((u) => u.displayName.includes('Bob'));
+
+        // Alice: [500, 300] to [520, 300] => dx=20, dy=0 => d=20
+        assert.strictEqual(alice.distance, 20.0);
+
+        // Bob: [500, 300] to [530, 340] => dx=30, dy=40 => d=50 (3-4-5 triangle)
+        assert.strictEqual(bob.distance, 50.0);
+      } finally {
+        spatialMock.mock.restore();
+      }
+    });
+
+    it('19. should exclude users located outside the configured proximity radius', async () => {
+      const spatialMock = setupSpatialMock();
+      try {
+        const nearby = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: PROXIMITY_RADIUS,
+          excludeUserId: pivotUserId
+        });
+
+        const hasElena = nearby.some((u) => u.displayName.includes('Elena'));
+        const hasFrank = nearby.some((u) => u.displayName.includes('Frank'));
+
+        assert.strictEqual(hasElena, false, 'Elena at 105px must be excluded from 100px radius');
+        assert.strictEqual(hasFrank, false, 'Frank at 150px must be excluded from 100px radius');
+      } finally {
+        spatialMock.mock.restore();
+      }
+    });
+
+    it('20. should test boundary cases around configured radius (exact boundary, just inside, just outside, and custom radii)', async () => {
+      const spatialMock = setupSpatialMock();
+      try {
+        // Standard 100px radius
+        const nearby100 = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        const carol = nearby100.find((u) => u.displayName.includes('Carol'));
+        const david = nearby100.find((u) => u.displayName.includes('David'));
+        const elena = nearby100.find((u) => u.displayName.includes('Elena'));
+
+        // Just inside (95.0px): included with positive volume
+        assert.ok(carol, 'Carol at 95px must be included');
+        assert.ok(carol.gain > 0, 'Volume at 95px should be positive');
+
+        // Exact boundary (100.0px): included with 0.0 volume
+        assert.ok(david, 'David at exact 100px boundary must be included');
+        assert.strictEqual(david.volume, 0.0, 'Volume at exact boundary must attenuate to 0.0');
+
+        // Just outside (105.0px): excluded
+        assert.strictEqual(elena, undefined, 'Elena at 105px must be excluded');
+
+        // Custom radius: 50px whisper zone
+        const nearby50 = await getNearbyUsers({
+          officeId: officeA,
+          location: pivotLocation,
+          radius: 50,
+          excludeUserId: pivotUserId
+        });
+
+        // At 50px, Alice (20px) is inside, Bob (50px) is at exact boundary, Carol (95px) is outside
+        assert.strictEqual(nearby50.length, 2, 'Whisper zone should return Alice and Bob only');
+        assert.strictEqual(nearby50[0].displayName, 'Alice (Close)');
+        assert.strictEqual(nearby50[1].displayName, 'Bob (Mid)');
+        assert.strictEqual(nearby50[1].volume, 0.0, 'Bob at 50px boundary has 0.0 volume in 50px whisper zone');
+      } finally {
+        spatialMock.mock.restore();
+      }
+    });
+  });
 });
+
