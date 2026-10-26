@@ -180,4 +180,30 @@ describe('LivePosition Schema & Index Validation', () => {
     assert.strictEqual(userIdPath.options.required, true, 'userId is required');
     assert.strictEqual(userIdPath.options.unique, true, 'userId must be unique in schema');
   });
+
+  it('should support in-place coordinate updates on LivePosition instance and maintain schema validity', async () => {
+    const position = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: [100, 200],
+      socketId: 'sock_original'
+    });
+
+    await position.validate();
+    assert.deepStrictEqual(position.location, [100, 200]);
+
+    // Mutate location in-place
+    position.location = [350, 450];
+    position.lastUpdated = new Date();
+    await position.validate();
+    assert.deepStrictEqual(position.location, [350, 450]);
+
+    // Ensure invalid updated coordinates are caught
+    position.location = [-10, 450];
+    await assert.rejects(
+      async () => await position.validate(),
+      (err) => err.errors && Boolean(err.errors.location)
+    );
+  });
 });
+

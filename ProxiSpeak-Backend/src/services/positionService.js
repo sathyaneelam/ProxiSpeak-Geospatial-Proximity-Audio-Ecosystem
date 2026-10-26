@@ -89,7 +89,8 @@ function validateCoordinates(location) {
 
 /**
  * Upsert or update a user's live position in a virtual office.
- * Uses atomic MongoDB findOneAndUpdate with upsert: true.
+ * Ensures an existing user's LivePosition is updated rather than creating duplicate documents.
+ * Skips redundant database writes if position, office, and socket have not changed.
  *
  * @param {object} params
  * @param {string|mongoose.Types.ObjectId} params.userId - User ObjectId
@@ -103,6 +104,46 @@ async function upsertPosition({ userId, officeId, location, socketId = null }) {
   if (!officeId) throw new Error('officeId is required for position upsert');
   const validLocation = validateCoordinates(location);
 
+  // Check if position already exists for this user to avoid redundant writes and preserve unique record
+  const existing = await LivePosition.findOne({ userId });
+
+  if (existing) {
+    const isSameLocation =
+      Array.isArray(existing.location) &&
+      existing.location.length === 2 &&
+      existing.location[0] === validLocation[0] &&
+      existing.location[1] === validLocation[1];
+
+    const isSameOffice = String(existing.officeId) === String(officeId);
+    const isSameSocket =
+      socketId === undefined ||
+      socketId === null ||
+      existing.socketId === socketId;
+
+    if (isSameLocation && isSameOffice && isSameSocket) {
+      // Avoid unnecessary MongoDB writes where the current position has not changed
+      return existing;
+    }
+
+    const update = {
+      $set: {
+        officeId,
+        location: validLocation,
+        lastUpdated: new Date()
+      }
+    };
+
+    if (socketId !== undefined) {
+      update.$set.socketId = socketId;
+    }
+
+    return await LivePosition.findOneAndUpdate({ userId }, update, {
+      new: true,
+      runValidators: true
+    });
+  }
+
+  // Create first LivePosition document atomically using upsert
   const filter = { userId };
   const update = {
     $set: {
@@ -123,26 +164,107 @@ async function upsertPosition({ userId, officeId, location, socketId = null }) {
 }
 
 /**
- * High-frequency position update for avatar movement within the current office.
+ * High-frequency position update for avatar movement within an office.
+ * Updates the single existing LivePosition record in-place.
+ * Preserves officeId and socketId associations.
+ * Skips redundant writes if coordinates are unchanged.
+ * Safely handles missing/non-existing records.
  *
  * @param {string|mongoose.Types.ObjectId} userId
  * @param {[number, number]} location - [x, y] coordinates
+ * @param {object|string|mongoose.Types.ObjectId} [options] - Optional officeId or options object ({ officeId, socketId })
  * @returns {Promise<Document|null>}
  */
-async function updatePosition(userId, location) {
+async function updatePosition(userId, location, options = {}) {
   if (!userId) throw new Error('userId is required');
   const validLocation = validateCoordinates(location);
 
+  let targetOfficeId = null;
+  let targetSocketId = undefined;
+
+  if (options) {
+    if (typeof options === 'string' || options instanceof mongoose.Types.ObjectId) {
+      targetOfficeId = options;
+    } else if (typeof options === 'object') {
+      targetOfficeId = options.officeId || null;
+      targetSocketId = options.socketId;
+    }
+  }
+
+  const existing = await LivePosition.findOne({ userId });
+
+  if (!existing) {
+    // Handle the case where a user has no existing LivePosition
+    if (targetOfficeId) {
+      return await upsertPosition({
+        userId,
+        officeId: targetOfficeId,
+        location: validLocation,
+        socketId: targetSocketId || null
+      });
+    }
+
+    // Attempt to resolve user default/currentOfficeId
+    const user = await User.findById(userId).lean().catch(() => null);
+    if (user && user.currentOfficeId) {
+      return await upsertPosition({
+        userId,
+        officeId: user.currentOfficeId,
+        location: validLocation,
+        socketId: targetSocketId || null
+      });
+    }
+
+    // Safely return null when position cannot be created without office association
+    return null;
+  }
+
+  const isSameLocation =
+    Array.isArray(existing.location) &&
+    existing.location.length === 2 &&
+    existing.location[0] === validLocation[0] &&
+    existing.location[1] === validLocation[1];
+
+  const isSameOffice =
+    !targetOfficeId || String(existing.officeId) === String(targetOfficeId);
+
+  const isSameSocket =
+    targetSocketId === undefined || existing.socketId === targetSocketId;
+
+  if (isSameLocation && isSameOffice && isSameSocket) {
+    // Avoid unnecessary MongoDB writes where current position has not changed
+    return existing;
+  }
+
+  const updateFields = {
+    location: validLocation,
+    lastUpdated: new Date()
+  };
+
+  if (targetOfficeId && String(existing.officeId) !== String(targetOfficeId)) {
+    updateFields.officeId = targetOfficeId;
+  }
+
+  if (targetSocketId !== undefined && existing.socketId !== targetSocketId) {
+    updateFields.socketId = targetSocketId;
+  }
+
   return await LivePosition.findOneAndUpdate(
     { userId },
-    {
-      $set: {
-        location: validLocation,
-        lastUpdated: new Date()
-      }
-    },
+    { $set: updateFields },
     { new: true, runValidators: true }
   );
+}
+
+/**
+ * Retrieve the current LivePosition document for a user.
+ *
+ * @param {string|mongoose.Types.ObjectId} userId
+ * @returns {Promise<Document|null>}
+ */
+async function getUserPosition(userId) {
+  if (!userId) return null;
+  return await LivePosition.findOne({ userId });
 }
 
 /**
@@ -281,8 +403,10 @@ module.exports = {
   validateCoordinates,
   upsertPosition,
   updatePosition,
+  getUserPosition,
   getNearbyUsers,
   getOfficePositions,
   removeUserPosition,
   removeBySocketId
 };
+

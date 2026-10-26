@@ -2,12 +2,16 @@ const { describe, it, mock } = require('node:test');
 const assert = require('node:assert');
 const mongoose = require('mongoose');
 const LivePosition = require('../../src/models/LivePosition');
+const User = require('../../src/models/User');
 const {
   validateCoordinates,
   calculateDistance,
   calculateAudioVolume,
   calculateStereoPan,
-  getNearbyUsers
+  getNearbyUsers,
+  upsertPosition,
+  updatePosition,
+  getUserPosition
 } = require('../../src/services/positionService');
 const {
   DEFAULT_ROOM_ZONES,
@@ -594,6 +598,366 @@ describe('Position Service & Contract Validation', () => {
 
       assert.ok(stats.p50 < 20.0, `p50 (${stats.p50}ms) must be under 20ms SLA`);
       assert.ok(stats.p95 < 20.0, `p95 (${stats.p95}ms) must be under 20ms SLA`);
+    });
+  });
+
+  describe('LivePosition Persistence & Update Integrity', () => {
+    const testOfficeId1 = new mongoose.Types.ObjectId();
+    const testOfficeId2 = new mongoose.Types.ObjectId();
+    const testUserA = new mongoose.Types.ObjectId();
+    const testUserB = new mongoose.Types.ObjectId();
+
+    let mockPositionStore;
+    let mockUserStore;
+    let findOneAndUpdateCalls;
+    let findOneCalls;
+    let findOneMock;
+    let findOneAndUpdateMock;
+    let findByIdMock;
+
+    function setupMocks() {
+      mockPositionStore = new Map();
+      mockUserStore = new Map();
+      findOneAndUpdateCalls = 0;
+      findOneCalls = 0;
+
+      findOneMock = mock.method(LivePosition, 'findOne', async (filter) => {
+        findOneCalls++;
+        if (filter.userId) {
+          const doc = mockPositionStore.get(String(filter.userId));
+          return doc ? { ...doc } : null;
+        }
+        if (filter.socketId) {
+          for (const doc of mockPositionStore.values()) {
+            if (doc.socketId === filter.socketId) return { ...doc };
+          }
+        }
+        return null;
+      });
+
+      findOneAndUpdateMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+        findOneAndUpdateCalls++;
+        const userId = String(filter.userId);
+        let doc = mockPositionStore.get(userId);
+
+        if (!doc) {
+          if (options && options.upsert) {
+            doc = {
+              _id: new mongoose.Types.ObjectId(),
+              userId: filter.userId,
+              createdAt: new Date(),
+              ...update.$set
+            };
+            mockPositionStore.set(userId, doc);
+            return { ...doc };
+          }
+          return null;
+        }
+
+        Object.assign(doc, update.$set);
+        mockPositionStore.set(userId, doc);
+        return { ...doc };
+      });
+
+      findByIdMock = mock.method(User, 'findById', (id) => {
+        return {
+          lean: async () => {
+            return mockUserStore.get(String(id)) || null;
+          }
+        };
+      });
+    }
+
+    function restoreMocks() {
+      if (findOneMock) findOneMock.mock.restore();
+      if (findOneAndUpdateMock) findOneAndUpdateMock.mock.restore();
+      if (findByIdMock) findByIdMock.mock.restore();
+    }
+
+    it('1. should create a first LivePosition when user has no existing record', async () => {
+      setupMocks();
+      try {
+        const created = await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [200, 300],
+          socketId: 'sock_init_01'
+        });
+
+        assert.ok(created, 'Should return created position document');
+        assert.strictEqual(String(created.userId), String(testUserA));
+        assert.strictEqual(String(created.officeId), String(testOfficeId1));
+        assert.deepStrictEqual(created.location, [200, 300]);
+        assert.strictEqual(created.socketId, 'sock_init_01');
+        assert.strictEqual(mockPositionStore.size, 1);
+        assert.strictEqual(findOneAndUpdateCalls, 1);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('2. should update an existing LivePosition in-place without creating a duplicate', async () => {
+      setupMocks();
+      try {
+        const first = await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [200, 300],
+          socketId: 'sock_init_01'
+        });
+
+        const updated = await updatePosition(testUserA, [250, 350]);
+
+        assert.ok(updated, 'Should return updated position document');
+        assert.strictEqual(String(updated._id), String(first._id), 'Document _id must be preserved (in-place update)');
+        assert.strictEqual(String(updated.userId), String(testUserA));
+        assert.deepStrictEqual(updated.location, [250, 350]);
+        assert.strictEqual(mockPositionStore.size, 1, 'Store must still contain exactly 1 position');
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('3. should handle multiple sequential updates for the same user accurately', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [100, 100],
+          socketId: 'sock_multi_01'
+        });
+
+        const waypoints = [
+          [120, 105],
+          [150, 110],
+          [180, 120],
+          [220, 140]
+        ];
+
+        for (const pt of waypoints) {
+          const res = await updatePosition(testUserA, pt);
+          assert.deepStrictEqual(res.location, pt);
+        }
+
+        const current = mockPositionStore.get(String(testUserA));
+        assert.deepStrictEqual(current.location, [220, 140]);
+        assert.strictEqual(mockPositionStore.size, 1);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('4. should confirm only one LivePosition remains for the user across multiple updates', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [100, 100],
+          socketId: 'sock_single'
+        });
+
+        await updatePosition(testUserA, [110, 110]);
+        await updatePosition(testUserA, [120, 120]);
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [130, 130],
+          socketId: 'sock_single'
+        });
+
+        const records = Array.from(mockPositionStore.values()).filter(
+          (doc) => String(doc.userId) === String(testUserA)
+        );
+
+        assert.strictEqual(records.length, 1, 'Exactly one LivePosition must exist for the user');
+        assert.deepStrictEqual(records[0].location, [130, 130]);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('5. should update location values accurately across canvas domain', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [500, 300]
+        });
+
+        // Test origin coordinates [0, 0]
+        const originRes = await updatePosition(testUserA, [0, 0]);
+        assert.deepStrictEqual(originRes.location, [0, 0]);
+
+        // Test corner coordinates [1000, 600]
+        const cornerRes = await updatePosition(testUserA, [1000, 600]);
+        assert.deepStrictEqual(cornerRes.location, [1000, 600]);
+
+        // Test custom precision coordinates [742, 389]
+        const customRes = await updatePosition(testUserA, [742, 389]);
+        assert.deepStrictEqual(customRes.location, [742, 389]);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('6. should preserve office association during movement and update it when moving to another office', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [100, 100]
+        });
+
+        // Movement within same office (officeId not supplied) preserves officeId
+        const moved = await updatePosition(testUserA, [150, 150]);
+        assert.strictEqual(String(moved.officeId), String(testOfficeId1), 'Original officeId must be preserved');
+
+        // Transfer to another office
+        const transferred = await updatePosition(testUserA, [200, 200], { officeId: testOfficeId2 });
+        assert.strictEqual(String(transferred.officeId), String(testOfficeId2), 'Office association must update to new office');
+
+        const current = mockPositionStore.get(String(testUserA));
+        assert.strictEqual(String(current.officeId), String(testOfficeId2));
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('7. should handle socketId correctly by preserving existing and updating on reconnect', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [100, 100],
+          socketId: 'sock_original'
+        });
+
+        // Regular move without socketId keeps existing socketId
+        const moveRes = await updatePosition(testUserA, [110, 110]);
+        assert.strictEqual(moveRes.socketId, 'sock_original', 'SocketId must be preserved during normal move');
+
+        // Reconnect update with new socketId updates socketId
+        const reconnectRes = await updatePosition(testUserA, [110, 110], { socketId: 'sock_reconnected' });
+        assert.strictEqual(reconnectRes.socketId, 'sock_reconnected', 'SocketId must update to new connection ID');
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('8. should avoid unnecessary MongoDB writes when position is repeated identically', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [400, 250],
+          socketId: 'sock_idle'
+        });
+
+        // Reset write counter after initial creation
+        findOneAndUpdateCalls = 0;
+
+        // Repeated update with identical location
+        const res1 = await updatePosition(testUserA, [400, 250]);
+        assert.deepStrictEqual(res1.location, [400, 250]);
+        assert.strictEqual(findOneAndUpdateCalls, 0, 'No MongoDB write should occur when location has not changed');
+
+        // Second repeated update with identical location
+        const res2 = await updatePosition(testUserA, [400, 250]);
+        assert.deepStrictEqual(res2.location, [400, 250]);
+        assert.strictEqual(findOneAndUpdateCalls, 0, 'No MongoDB write should occur on second identical update');
+
+        // Upsert with identical office, location, and socket
+        const res3 = await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [400, 250],
+          socketId: 'sock_idle'
+        });
+        assert.deepStrictEqual(res3.location, [400, 250]);
+        assert.strictEqual(findOneAndUpdateCalls, 0, 'No MongoDB write should occur on identical upsert');
+
+        // Now move slightly -> write should occur exactly once
+        const res4 = await updatePosition(testUserA, [401, 250]);
+        assert.deepStrictEqual(res4.location, [401, 250]);
+        assert.strictEqual(findOneAndUpdateCalls, 1, 'Exactly one write should occur when location actually changes');
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('9. should handle missing/non-existing position records safely', async () => {
+      setupMocks();
+      try {
+        // User B has no LivePosition and no currentOfficeId configured
+        const missingRes = await updatePosition(testUserB, [300, 300]);
+        assert.strictEqual(missingRes, null, 'Should safely return null when user has no position and no office');
+
+        // User B with officeId passed in options should safely initialize
+        const initializedRes = await updatePosition(testUserB, [300, 300], { officeId: testOfficeId1 });
+        assert.ok(initializedRes, 'Should initialize position when officeId is provided');
+        assert.strictEqual(String(initializedRes.officeId), String(testOfficeId1));
+        assert.deepStrictEqual(initializedRes.location, [300, 300]);
+
+        // User without position but with user.currentOfficeId should auto-initialize
+        const testUserC = new mongoose.Types.ObjectId();
+        mockUserStore.set(String(testUserC), {
+          _id: testUserC,
+          displayName: 'User C',
+          currentOfficeId: testOfficeId2
+        });
+
+        const autoInitRes = await updatePosition(testUserC, [450, 350]);
+        assert.ok(autoInitRes, 'Should auto-initialize position using user currentOfficeId');
+        assert.strictEqual(String(autoInitRes.officeId), String(testOfficeId2));
+        assert.deepStrictEqual(autoInitRes.location, [450, 350]);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('10. should verify the final stored MongoDB document adheres to LivePosition schema', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [500, 300],
+          socketId: 'sock_final_verify'
+        });
+
+        // Perform multiple movements
+        await updatePosition(testUserA, [520, 310]);
+        await updatePosition(testUserA, [540, 320]);
+
+        const storedDoc = await getUserPosition(testUserA);
+        assert.ok(storedDoc, 'Stored document must be retrievable via getUserPosition');
+
+        // Validate directly against Mongoose LivePosition schema
+        const mongooseDoc = new LivePosition({
+          userId: storedDoc.userId,
+          officeId: storedDoc.officeId,
+          location: storedDoc.location,
+          socketId: storedDoc.socketId,
+          lastUpdated: storedDoc.lastUpdated
+        });
+
+        await mongooseDoc.validate();
+
+        assert.strictEqual(String(storedDoc.userId), String(testUserA));
+        assert.strictEqual(String(storedDoc.officeId), String(testOfficeId1));
+        assert.deepStrictEqual(storedDoc.location, [540, 320]);
+        assert.strictEqual(storedDoc.socketId, 'sock_final_verify');
+        assert.ok(storedDoc.lastUpdated instanceof Date);
+        assert.strictEqual(mockPositionStore.size, 1);
+      } finally {
+        restoreMocks();
+      }
     });
   });
 });
