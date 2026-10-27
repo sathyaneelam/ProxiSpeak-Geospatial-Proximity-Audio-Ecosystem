@@ -72,6 +72,7 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(data.message, "Office name is required");
   });
 
+ 
   it("POST /api/positions with invalid userId should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
@@ -87,6 +88,7 @@ describe("REST API Integration Tests", () => {
     const data = await res.json();
     assert.strictEqual(data.status, "error");
   });
+
 
   it("POST with non-JSON Content-Type should return a clear 415 error", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
