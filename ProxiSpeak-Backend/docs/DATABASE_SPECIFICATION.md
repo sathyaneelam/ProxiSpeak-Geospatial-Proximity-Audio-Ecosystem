@@ -208,6 +208,8 @@ const nearbyPeers = await getNearbyUsers({
    - **Stereo Panning:** Computed via horizontal displacement ($\text{Pan} = \text{clamp}((x_{\text{peer}} - x_{\text{local}})/R, -1, 1)$).
 4. **Result Ordering:**
    Results are sorted in ascending order of distance (`a.distance - b.distance`), ensuring the closest peers appear first in the array.
+5. **Empty Result Sets Handling:**
+   When an office has zero occupants, when the querying user is the sole occupant in the room (excluded via `excludeUserId`), when all peers are located beyond the earshot radius, or when peers only exist in another office, `getNearbyUsers` returns an empty array `[]` cleanly and deterministically without throwing errors or referencing undefined properties.
 
 **Returned Data Shape:**
 ```json

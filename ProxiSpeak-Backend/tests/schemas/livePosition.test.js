@@ -168,6 +168,63 @@ describe('LivePosition Schema & Index Validation', () => {
       hasOfficeIdIndex,
       'Schema must define single-field index on { officeId: 1 } for office-level avatar queries'
     );
+
+    const hasSocketIdIndex = indexes.some(([fields]) => {
+      return fields.socketId === 1 && Object.keys(fields).length === 1;
+    });
+    assert.ok(
+      hasSocketIdIndex,
+      'Schema must define single-field index on { socketId: 1 } for removeBySocketId cleanup'
+    );
+  });
+
+  it('should enforce compound 2D planar index prefix ordering with officeId as leading key', () => {
+    const indexes = LivePosition.schema.indexes();
+    const compoundIndexEntry = indexes.find(([fields]) => {
+      return fields.officeId === 1 && fields.location === '2d';
+    });
+
+    assert.ok(compoundIndexEntry, 'Compound index { officeId: 1, location: "2d" } must exist');
+    const fieldKeys = Object.keys(compoundIndexEntry[0]);
+    assert.strictEqual(
+      fieldKeys[0],
+      'officeId',
+      'officeId must be the leading prefix key to partition spatial index lookups by room'
+    );
+    assert.strictEqual(
+      fieldKeys[1],
+      'location',
+      'location must be the secondary 2d planar spatial key'
+    );
+  });
+
+  it('should verify schema index definitions support all positionService query patterns without unindexed scans', () => {
+    const indexes = LivePosition.schema.indexes();
+    const fieldIndexMap = indexes.map(([fields]) => Object.keys(fields));
+
+    // 1. Proximity Spatial Query: filtered by officeId + location
+    const supportsSpatial = fieldIndexMap.some(
+      (keys) => keys[0] === 'officeId' && keys[1] === 'location'
+    );
+    assert.ok(supportsSpatial, 'Compound index must cover getNearbyUsers ({ officeId, location })');
+
+    // 2. Office Avatar Sync Query: filtered by officeId
+    const supportsOffice = fieldIndexMap.some(
+      (keys) => keys.length === 1 && keys[0] === 'officeId'
+    );
+    assert.ok(supportsOffice, 'Single-field index must cover getOfficePositions ({ officeId })');
+
+    // 3. User Avatar 1:1 Mapping: filtered by userId (unique)
+    const supportsUser = indexes.some(
+      ([fields, opts]) => Object.keys(fields).length === 1 && fields.userId === 1 && opts?.unique
+    );
+    assert.ok(supportsUser, 'Unique index must cover upsertPosition / updatePosition ({ userId })');
+
+    // 4. Socket Disconnect Query: filtered by socketId
+    const supportsSocket = fieldIndexMap.some(
+      (keys) => keys.length === 1 && keys[0] === 'socketId'
+    );
+    assert.ok(supportsSocket, 'Single-field index must cover removeBySocketId ({ socketId })');
   });
 
   it('should associate live position with an office via officeId and enforce unique userId schema reference', () => {

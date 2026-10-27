@@ -960,4 +960,227 @@ describe('Position Service & Contract Validation', () => {
       }
     });
   });
+
+  describe('Proximity Query Search Patterns & Empty Result Sets (getNearbyUsers)', () => {
+    const targetOfficeId = new mongoose.Types.ObjectId();
+    const otherOfficeId = new mongoose.Types.ObjectId();
+    const pivotUserId = new mongoose.Types.ObjectId();
+    const pivotLocation = [500, 300];
+
+    let queryHarnessMock;
+
+    function setupHarness(dataset = []) {
+      return mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              return dataset.filter((doc) => {
+                // Office partition
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  return false;
+                }
+                // Self exclusion
+                if (query.userId?.$ne && String(doc.userId?._id || doc.userId) === String(query.userId.$ne)) {
+                  return false;
+                }
+                // Planar circular boundary
+                if (query.location?.$geoWithin?.$center) {
+                  const [[cx, cy], maxRadius] = query.location.$geoWithin.$center;
+                  const [x, y] = doc.location;
+                  const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+                  if (dist > maxRadius) {
+                    return false;
+                  }
+                }
+                return true;
+              });
+            }
+          })
+        };
+      });
+    }
+
+    it('should return an empty array when the target office has zero users in the database', async () => {
+      queryHarnessMock = setupHarness([]);
+      try {
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: pivotLocation,
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        assert.ok(Array.isArray(result), 'Result must be an array');
+        assert.strictEqual(result.length, 0, 'Must return 0 nearby users in an empty office');
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+
+    it('should return an empty array when the querying user is the sole occupant in the office', async () => {
+      const soleOccupant = [
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: pivotUserId, displayName: 'Solo User' },
+          officeId: targetOfficeId,
+          location: [500, 300]
+        }
+      ];
+      queryHarnessMock = setupHarness(soleOccupant);
+      try {
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: pivotLocation,
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        assert.strictEqual(result.length, 0, 'Self user must be excluded, leaving an empty result set');
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+
+    it('should return an empty array when all peers in the office are outside the earshot radius', async () => {
+      const farPeers = [
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer At 101px' },
+          officeId: targetOfficeId,
+          location: [500, 401] // d = 101px > 100px
+        },
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer At 250px' },
+          officeId: targetOfficeId,
+          location: [650, 500] // dx = 150, dy = 200 => d = 250px
+        }
+      ];
+      queryHarnessMock = setupHarness(farPeers);
+      try {
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: pivotLocation,
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        assert.strictEqual(result.length, 0, 'All peers outside 100px radius must be excluded');
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+
+    it('should return an empty array when peers exist at identical coordinates but in another office', async () => {
+      const crossOfficePeers = [
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Cross Office Peer' },
+          officeId: otherOfficeId, // Different office!
+          location: [500, 300] // Identical X/Y coordinates
+        }
+      ];
+      queryHarnessMock = setupHarness(crossOfficePeers);
+      try {
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: pivotLocation,
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        assert.strictEqual(result.length, 0, 'Office partition must prevent cross-office peers from being returned');
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+
+    it('should return an empty array when a custom whisper radius excludes all peers', async () => {
+      const peersAt35px = [
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer at 35px' },
+          officeId: targetOfficeId,
+          location: [535, 300] // dx = 35, dy = 0 => 35px
+        }
+      ];
+      queryHarnessMock = setupHarness(peersAt35px);
+      try {
+        // Query with whisper radius = 20px
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: pivotLocation,
+          radius: 20,
+          excludeUserId: pivotUserId
+        });
+
+        assert.strictEqual(result.length, 0, '20px whisper radius must exclude peer at 35px');
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+
+    it('should handle fractional X/Y coordinates, compute accurate distance, and sort nearest first', async () => {
+      const fractionalPeers = [
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer Far', avatarColor: '#10b981' },
+          officeId: targetOfficeId,
+          location: [545.5, 360.25] // dx = 45.5, dy = 60.25 => d = ~75.50px
+        },
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer Near', avatarColor: '#6366f1' },
+          officeId: targetOfficeId,
+          location: [512.25, 316.5] // dx = 12.25, dy = 16.5 => d = ~20.55px
+        }
+      ];
+      queryHarnessMock = setupHarness(fractionalPeers);
+      try {
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: [500, 300],
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        assert.strictEqual(result.length, 2);
+        assert.strictEqual(result[0].displayName, 'Peer Near', 'Closer fractional peer must be sorted first');
+        assert.strictEqual(result[1].displayName, 'Peer Far');
+        assert.ok(result[0].distance < result[1].distance);
+        assert.ok(result[0].gain > result[1].gain, 'Closer peer must have higher audio gain');
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+
+    it('should safely handle orphaned LivePosition documents when populated userId is null', async () => {
+      const orphanedPeer = [
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: null, // Orphaned or deleted user profile
+          officeId: targetOfficeId,
+          location: [520, 300],
+          socketId: 'sock_orphan',
+          lastUpdated: new Date()
+        }
+      ];
+      queryHarnessMock = setupHarness(orphanedPeer);
+      try {
+        const result = await getNearbyUsers({
+          officeId: targetOfficeId,
+          location: pivotLocation,
+          radius: 100
+        });
+
+        assert.strictEqual(result.length, 1);
+        assert.strictEqual(result[0].displayName, 'Unknown', 'Should default displayName to Unknown');
+        assert.strictEqual(result[0].avatarColor, '#3b82f6', 'Should default avatarColor to #3b82f6');
+        assert.strictEqual(result[0].isOnline, false, 'Should default isOnline to false');
+        assert.strictEqual(result[0].distance, 20.0);
+      } finally {
+        queryHarnessMock.mock.restore();
+      }
+    });
+  });
 });
