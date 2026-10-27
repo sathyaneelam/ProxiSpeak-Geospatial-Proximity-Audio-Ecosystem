@@ -72,7 +72,6 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(data.message, "Office name is required");
   });
 
- 
   it("POST /api/positions with invalid userId should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
@@ -88,7 +87,6 @@ describe("REST API Integration Tests", () => {
     const data = await res.json();
     assert.strictEqual(data.status, "error");
   });
-
 
   it("POST with non-JSON Content-Type should return a clear 415 error", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
@@ -118,5 +116,22 @@ describe("REST API Integration Tests", () => {
     const data = await res.json();
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "Route not found");
+  });
+
+  it("POST /api/positions with invalid coordinates should return 400", async () => {
+    const res = await fetch(`${baseUrl}/api/positions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: "507f1f77bcf86cd799439011",
+        x: "not-a-number",
+        y: 100,
+      }),
+    });
+
+    assert.strictEqual(res.status, 400);
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "x and y must be valid numbers");
   });
 });
