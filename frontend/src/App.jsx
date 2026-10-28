@@ -22,7 +22,12 @@ const RADIUS = 100
 // The 100px server proximity radius does NOT change.
 const PLAYER_RADIUS = 13
 
-const OFFICE_ID = 'office-01'
+// Keep the existing default office for old links; honor a room code from the meeting lobby.
+const OFFICE_ID = (() => {
+  const raw = new URLSearchParams(window.location.search).get('room') || ''
+  const normalized = raw.toUpperCase().replace(/-/g, '')
+  return /^[A-HJ-NP-Z2-9]{8}$/.test(normalized) ? `meeting-${normalized}` : 'office-01'
+})()
 
 const AVATAR_COLORS = ['#22d3ee', '#a78bfa', '#fb7185', '#34d399', '#fbbf24', '#60a5fa']
 
