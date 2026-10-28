@@ -262,5 +262,126 @@ describe('LivePosition Schema & Index Validation', () => {
       (err) => err.errors && Boolean(err.errors.location)
     );
   });
+
+  it('should reject coordinates containing NaN, Infinity, -Infinity, non-numeric values, or malformed arrays in schema', async () => {
+    const invalidSchemaCoordinates = [
+      [NaN, 200],
+      [100, NaN],
+      [NaN, NaN],
+      [Infinity, 200],
+      [100, Infinity],
+      [-Infinity, 200],
+      [100, -Infinity],
+      [Infinity, Infinity],
+      [-Infinity, -Infinity],
+      ['non_numeric_x', 200],
+      [100, 'non_numeric_y'],
+      [null, 200],
+      [100, null],
+      [undefined, 200],
+      [100, undefined],
+      [],
+      [500],
+      [500, 300, 100]
+    ];
+
+    for (const invalidLocation of invalidSchemaCoordinates) {
+      const position = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: invalidLocation
+      });
+
+      await assert.rejects(
+        async () => await position.validate(),
+        (err) => Boolean(err),
+        `Schema should reject invalid coordinates: ${JSON.stringify(invalidLocation)}`
+      );
+    }
+  });
+
+  it('should validate coordinates at all canvas boundaries and corners [0, 0], [1000, 0], [0, 600], [1000, 600]', async () => {
+    const validBoundaryPoints = [
+      [0, 0],
+      [1000, 0],
+      [0, 600],
+      [1000, 600],
+      [500, 0],
+      [500, 600],
+      [0, 300],
+      [1000, 300],
+      [500.5, 300.25],
+      [0.001, 0.001],
+      [999.999, 599.999]
+    ];
+
+    for (const point of validBoundaryPoints) {
+      const position = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: point
+      });
+
+      await position.validate();
+      assert.deepStrictEqual(position.location, point);
+    }
+  });
+
+  it('should reject negative coordinates at and just outside boundary limits in schema', async () => {
+    const negativeBoundaryPoints = [
+      [-0.001, 300],
+      [500, -0.001],
+      [-0.001, -0.001],
+      [-1, -1],
+      [-1, 600],
+      [1000, -1]
+    ];
+
+    for (const point of negativeBoundaryPoints) {
+      const position = new LivePosition({
+        userId: dummyUserId,
+        officeId: dummyOfficeId,
+        location: point
+      });
+
+      await assert.rejects(
+        async () => await position.validate(),
+        (err) => err.errors && Boolean(err.errors.location),
+        `Schema must reject negative boundary point: ${JSON.stringify(point)}`
+      );
+    }
+  });
+
+  it('should reject invalid in-place location updates with NaN, Infinity, or malformed arrays on existing documents', async () => {
+    const position = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: [200, 300],
+      socketId: 'sock_valid_init'
+    });
+
+    await position.validate();
+
+    // 1. In-place NaN
+    position.location = [NaN, 300];
+    await assert.rejects(async () => await position.validate());
+
+    // 2. In-place Infinity
+    position.location = [200, Infinity];
+    await assert.rejects(async () => await position.validate());
+
+    // 3. In-place Malformed array
+    position.location = [200];
+    await assert.rejects(async () => await position.validate());
+
+    // 4. In-place Negative
+    position.location = [-5, 300];
+    await assert.rejects(async () => await position.validate());
+
+    // 5. Revert to valid coordinates
+    position.location = [250, 350];
+    await position.validate();
+    assert.deepStrictEqual(position.location, [250, 350]);
+  });
 });
 

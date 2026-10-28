@@ -11,7 +11,10 @@ const {
   getNearbyUsers,
   upsertPosition,
   updatePosition,
-  getUserPosition
+  getUserPosition,
+  getOfficePositions,
+  isPositionWithinOffice,
+  validatePositionInOffice
 } = require('../../src/services/positionService');
 const {
   DEFAULT_ROOM_ZONES,
@@ -31,6 +34,124 @@ describe('Position Service & Contract Validation', () => {
       assert.throws(() => validateCoordinates(['100', '200']), /Coordinates x and y must be finite numbers/);
       assert.throws(() => validateCoordinates([NaN, 200]), /Coordinates x and y must be finite numbers/);
       assert.throws(() => validateCoordinates([100, Infinity]), /Coordinates x and y must be finite numbers/);
+    });
+
+    it('should reject invalid coordinates across all edge cases (missing, non-numeric, NaN, Infinity, and malformed arrays)', () => {
+      // 1. Missing coordinates
+      assert.throws(() => validateCoordinates(null), /Location must be a 2-element array/);
+      assert.throws(() => validateCoordinates(undefined), /Location must be a 2-element array/);
+
+      // 2. Malformed coordinate arrays & non-arrays
+      const malformedCases = [
+        [],
+        [500],
+        [500, 300, 100],
+        [[500, 300]],
+        { x: 500, y: 300 },
+        '500, 300',
+        12345,
+        true,
+        false
+      ];
+      for (const malformed of malformedCases) {
+        assert.throws(
+          () => validateCoordinates(malformed),
+          /Location must be a 2-element array|Coordinates x and y must be finite numbers/,
+          `Should reject malformed coordinate input: ${JSON.stringify(malformed)}`
+        );
+      }
+
+      // 3. Non-numeric values within 2-element array
+      const nonNumericCases = [
+        ['500', 300],
+        [500, '300'],
+        ['500', '300'],
+        ['foo', 'bar'],
+        [null, 300],
+        [500, null],
+        [undefined, 300],
+        [500, undefined],
+        [true, 300],
+        [500, false],
+        [{}, 300],
+        [500, []]
+      ];
+      for (const nonNumeric of nonNumericCases) {
+        assert.throws(
+          () => validateCoordinates(nonNumeric),
+          /Coordinates x and y must be finite numbers/,
+          `Should reject non-numeric elements: ${JSON.stringify(nonNumeric)}`
+        );
+      }
+
+      // 4. NaN values
+      const nanCases = [
+        [NaN, 300],
+        [500, NaN],
+        [NaN, NaN]
+      ];
+      for (const nanCoord of nanCases) {
+        assert.throws(
+          () => validateCoordinates(nanCoord),
+          /Coordinates x and y must be finite numbers/,
+          `Should reject NaN coordinates: ${JSON.stringify(nanCoord)}`
+        );
+      }
+
+      // 5. Infinity and -Infinity values
+      const infCases = [
+        [Infinity, 300],
+        [500, Infinity],
+        [-Infinity, 300],
+        [500, -Infinity],
+        [Infinity, Infinity],
+        [-Infinity, -Infinity]
+      ];
+      for (const infCoord of infCases) {
+        assert.throws(
+          () => validateCoordinates(infCoord),
+          /Coordinates x and y must be finite numbers/,
+          `Should reject Infinity coordinates: ${JSON.stringify(infCoord)}`
+        );
+      }
+    });
+
+    it('should reject invalid location data in upsertPosition and updatePosition before database invocation', async () => {
+      const dummyUser = new mongoose.Types.ObjectId();
+      const dummyOffice = new mongoose.Types.ObjectId();
+
+      const invalidLocations = [
+        null,
+        undefined,
+        [],
+        [500],
+        [500, 300, 100],
+        [NaN, 300],
+        [500, Infinity],
+        [-Infinity, 300],
+        ['500', 300],
+        [500, '300']
+      ];
+
+      for (const invLoc of invalidLocations) {
+        // upsertPosition
+        await assert.rejects(
+          async () => await upsertPosition({
+            userId: dummyUser,
+            officeId: dummyOffice,
+            location: invLoc
+          }),
+          /Location must be a 2-element array|Coordinates x and y must be finite numbers/,
+          `upsertPosition should reject invalid location: ${JSON.stringify(invLoc)}`
+        );
+
+        // updatePosition
+        await assert.rejects(
+          async () => await updatePosition(dummyUser, invLoc),
+          /Location must be a 2-element array|Coordinates x and y must be finite numbers/,
+          `updatePosition should reject invalid location: ${JSON.stringify(invLoc)}`
+        );
+      }
     });
   });
 
@@ -614,6 +735,7 @@ describe('Position Service & Contract Validation', () => {
     let findOneMock;
     let findOneAndUpdateMock;
     let findByIdMock;
+    let findMock;
 
     function setupMocks() {
       mockPositionStore = new Map();
@@ -666,12 +788,37 @@ describe('Position Service & Contract Validation', () => {
           }
         };
       });
+
+      findMock = mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              const results = [];
+              for (const doc of mockPositionStore.values()) {
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  continue;
+                }
+                const user = mockUserStore.get(String(doc.userId)) || {
+                  _id: doc.userId,
+                  displayName: 'Test User'
+                };
+                results.push({
+                  ...doc,
+                  userId: user
+                });
+              }
+              return results;
+            }
+          })
+        };
+      });
     }
 
     function restoreMocks() {
       if (findOneMock) findOneMock.mock.restore();
       if (findOneAndUpdateMock) findOneAndUpdateMock.mock.restore();
       if (findByIdMock) findByIdMock.mock.restore();
+      if (findMock) findMock.mock.restore();
     }
 
     it('1. should create a first LivePosition when user has no existing record', async () => {
@@ -959,6 +1106,203 @@ describe('Position Service & Contract Validation', () => {
         restoreMocks();
       }
     });
+
+    it('11. should maintain persistence isolation across multiple distinct users', async () => {
+      setupMocks();
+      try {
+        // Create initial positions for User A and User B
+        const docA1 = await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [100, 100],
+          socketId: 'sock_user_a'
+        });
+
+        const docB1 = await upsertPosition({
+          userId: testUserB,
+          officeId: testOfficeId1,
+          location: [200, 200],
+          socketId: 'sock_user_b'
+        });
+
+        assert.strictEqual(mockPositionStore.size, 2, 'Store must contain exactly 2 documents for two users');
+        assert.notStrictEqual(String(docA1._id), String(docB1._id));
+
+        // Update User A only
+        const docA2 = await updatePosition(testUserA, [150, 150]);
+        assert.deepStrictEqual(docA2.location, [150, 150]);
+        assert.strictEqual(String(docA2._id), String(docA1._id), 'User A _id must be preserved');
+
+        // Verify User B document is completely unaffected
+        const docBCheck = await getUserPosition(testUserB);
+        assert.deepStrictEqual(docBCheck.location, [200, 200], 'User B location must remain unchanged');
+        assert.strictEqual(String(docBCheck._id), String(docB1._id), 'User B _id must remain unchanged');
+        assert.strictEqual(docBCheck.socketId, 'sock_user_b');
+
+        // Update User B only
+        const docB2 = await updatePosition(testUserB, [280, 280]);
+        assert.deepStrictEqual(docB2.location, [280, 280]);
+
+        // Verify User A document is still [150, 150]
+        const docACheck = await getUserPosition(testUserA);
+        assert.deepStrictEqual(docACheck.location, [150, 150], 'User A location must remain unchanged when User B is updated');
+
+        // Interleaved updates
+        await updatePosition(testUserA, [160, 160]);
+        await updatePosition(testUserB, [290, 290]);
+        await updatePosition(testUserA, [170, 170]);
+
+        assert.strictEqual(mockPositionStore.size, 2, 'Store must strictly maintain exactly 2 documents');
+        const finalA = await getUserPosition(testUserA);
+        const finalB = await getUserPosition(testUserB);
+        assert.deepStrictEqual(finalA.location, [170, 170]);
+        assert.deepStrictEqual(finalB.location, [290, 290]);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('12. should maintain document _id invariance across interleaved upsert and update operations', async () => {
+      setupMocks();
+      try {
+        // Step 1: Initial upsert
+        const doc1 = await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [300, 300],
+          socketId: 'sock_invar'
+        });
+        const initialId = String(doc1._id);
+
+        // Step 2: In-place update
+        const doc2 = await updatePosition(testUserA, [310, 310]);
+        assert.strictEqual(String(doc2._id), initialId);
+
+        // Step 3: Re-upsert for same user (e.g. client reconnect or page refresh)
+        const doc3 = await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [320, 320],
+          socketId: 'sock_invar_reconnect'
+        });
+        assert.strictEqual(String(doc3._id), initialId, 'Re-upsert must update existing record without changing _id');
+
+        // Step 4: Another in-place update
+        const doc4 = await updatePosition(testUserA, [330, 330]);
+        assert.strictEqual(String(doc4._id), initialId);
+
+        // Confirm collection size is strictly 1
+        assert.strictEqual(mockPositionStore.size, 1);
+        const stored = await getUserPosition(testUserA);
+        assert.strictEqual(String(stored._id), initialId);
+        assert.deepStrictEqual(stored.location, [330, 330]);
+        assert.strictEqual(stored.socketId, 'sock_invar_reconnect');
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('13. should prevent record corruption when an invalid update is rejected', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [400, 400],
+          socketId: 'sock_safeguard'
+        });
+
+        // Attempting invalid updates must reject
+        await assert.rejects(async () => await updatePosition(testUserA, [NaN, 400]));
+        await assert.rejects(async () => await updatePosition(testUserA, [400, Infinity]));
+        await assert.rejects(async () => await updatePosition(testUserA, [400]));
+        await assert.rejects(async () => await updatePosition(testUserA, null));
+
+        // Existing document must remain completely uncorrupted
+        const stored = await getUserPosition(testUserA);
+        assert.deepStrictEqual(stored.location, [400, 400], 'Original coordinates must remain intact');
+        assert.strictEqual(stored.socketId, 'sock_safeguard');
+        assert.strictEqual(mockPositionStore.size, 1);
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('14. should persist positions accurately at extreme office boundary edges and corners', async () => {
+      setupMocks();
+      try {
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [500, 300]
+        });
+
+        const extremeCorners = [
+          [0, 0],          // Canvas origin / top-left
+          [1000, 0],       // Top-right
+          [0, 600],        // Bottom-left
+          [1000, 600]      // Bottom-right
+        ];
+
+        for (const corner of extremeCorners) {
+          const res = await updatePosition(testUserA, corner);
+          assert.deepStrictEqual(res.location, corner, `Must accurately persist corner ${JSON.stringify(corner)}`);
+
+          const stored = await getUserPosition(testUserA);
+          assert.deepStrictEqual(stored.location, corner);
+        }
+      } finally {
+        restoreMocks();
+      }
+    });
+
+    it('15. should update officeId and reflect immediately in getOfficePositions during office transfer', async () => {
+      setupMocks();
+      try {
+        // Initialize user in Office 1
+        await upsertPosition({
+          userId: testUserA,
+          officeId: testOfficeId1,
+          location: [250, 250],
+          socketId: 'sock_xfer'
+        });
+
+        mockUserStore.set(String(testUserA), {
+          _id: testUserA,
+          displayName: 'Transferring User',
+          avatarColor: '#3b82f6',
+          isOnline: true
+        });
+
+        // Query Office 1
+        const office1PositionsBefore = await getOfficePositions(testOfficeId1);
+        assert.strictEqual(office1PositionsBefore.length, 1);
+        assert.strictEqual(String(office1PositionsBefore[0].userId), String(testUserA));
+
+        // Query Office 2 (should be empty)
+        const office2PositionsBefore = await getOfficePositions(testOfficeId2);
+        assert.strictEqual(office2PositionsBefore.length, 0);
+
+        // Transfer User to Office 2
+        const transferRes = await updatePosition(testUserA, [300, 300], { officeId: testOfficeId2 });
+        assert.strictEqual(String(transferRes.officeId), String(testOfficeId2));
+
+        // Query Office 1 (should now be empty)
+        const office1PositionsAfter = await getOfficePositions(testOfficeId1);
+        assert.strictEqual(office1PositionsAfter.length, 0, 'User must no longer appear in Office 1');
+
+        // Query Office 2 (should now contain User)
+        const office2PositionsAfter = await getOfficePositions(testOfficeId2);
+        assert.strictEqual(office2PositionsAfter.length, 1, 'User must now appear in Office 2');
+        assert.strictEqual(String(office2PositionsAfter[0].userId), String(testUserA));
+        assert.deepStrictEqual(office2PositionsAfter[0].location, [300, 300]);
+
+        // Collection still contains strictly 1 document
+        assert.strictEqual(mockPositionStore.size, 1);
+      } finally {
+        restoreMocks();
+      }
+    });
   });
 
   describe('Proximity Query Search Patterns & Empty Result Sets (getNearbyUsers)', () => {
@@ -1180,6 +1524,204 @@ describe('Position Service & Contract Validation', () => {
         assert.strictEqual(result[0].distance, 20.0);
       } finally {
         queryHarnessMock.mock.restore();
+      }
+    });
+  });
+
+  describe('Office Boundaries & Canvas Domain Constraints (1000 × 600)', () => {
+    const defaultOffice = { dimensions: { width: 1000, height: 600 } };
+
+    it('should validate coordinates at all 4 corners and perimeter edges of 1000 × 600 office', () => {
+      const validPoints = [
+        [0, 0],          // Origin / Top-left
+        [1000, 0],       // Top-right
+        [0, 600],        // Bottom-left
+        [1000, 600],     // Bottom-right
+        [500, 0],        // Top perimeter edge
+        [500, 600],      // Bottom perimeter edge
+        [0, 300],        // Left perimeter edge
+        [1000, 300],     // Right perimeter edge
+        [0.01, 0.01],    // High-precision just inside top-left
+        [999.99, 599.99] // High-precision just inside bottom-right
+      ];
+
+      for (const pt of validPoints) {
+        assert.strictEqual(
+          isPositionWithinOffice(pt, defaultOffice),
+          true,
+          `Point ${JSON.stringify(pt)} should be within 1000x600 office`
+        );
+        assert.deepStrictEqual(
+          validatePositionInOffice(pt, defaultOffice),
+          pt,
+          `validatePositionInOffice should return coordinates for ${JSON.stringify(pt)}`
+        );
+      }
+    });
+
+    it('should reject coordinates just outside the 1000 × 600 office boundaries', () => {
+      const outOfBoundsCases = [
+        // Negative X (outside left)
+        { pt: [-0.01, 300], pattern: /Coordinates must be non-negative/ },
+        { pt: [-1, 300], pattern: /Coordinates must be non-negative/ },
+        // Exceeding X (outside right)
+        { pt: [1000.01, 300], pattern: /X coordinate \(1000\.01\) exceeds office width \(1000\)/ },
+        { pt: [1001, 300], pattern: /X coordinate \(1001\) exceeds office width \(1000\)/ },
+        // Negative Y (outside top)
+        { pt: [500, -0.01], pattern: /Coordinates must be non-negative/ },
+        { pt: [500, -1], pattern: /Coordinates must be non-negative/ },
+        // Exceeding Y (outside bottom)
+        { pt: [500, 600.01], pattern: /Y coordinate \(600\.01\) exceeds office height \(600\)/ },
+        { pt: [500, 601], pattern: /Y coordinate \(601\) exceeds office height \(600\)/ },
+        // Corner diagonals outside
+        { pt: [-1, -1], pattern: /Coordinates must be non-negative/ },
+        { pt: [1001, -1], pattern: /Coordinates must be non-negative/ },
+        { pt: [-1, 601], pattern: /Coordinates must be non-negative/ },
+        { pt: [1001, 601], pattern: /X coordinate \(1001\) exceeds office width \(1000\)/ }
+      ];
+
+      for (const { pt, pattern } of outOfBoundsCases) {
+        assert.strictEqual(
+          isPositionWithinOffice(pt, defaultOffice),
+          false,
+          `Point ${JSON.stringify(pt)} must be outside 1000x600 office`
+        );
+        assert.throws(
+          () => validatePositionInOffice(pt, defaultOffice),
+          pattern,
+          `Expected ${pattern} for out-of-bounds point ${JSON.stringify(pt)}`
+        );
+      }
+    });
+  });
+
+  describe('Multi-Office Spatial Partitioning & Query Isolation', () => {
+    const officeA = new mongoose.Types.ObjectId();
+    const officeB = new mongoose.Types.ObjectId();
+    const officeC = new mongoose.Types.ObjectId();
+
+    const userA = new mongoose.Types.ObjectId();
+    const userB = new mongoose.Types.ObjectId();
+    const userC = new mongoose.Types.ObjectId();
+    const peerA = new mongoose.Types.ObjectId();
+
+    let multiOfficeDataset;
+    let multiOfficeMock;
+
+    function setupMultiOfficeMock(dataset) {
+      return mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              return dataset.filter((doc) => {
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  return false;
+                }
+                if (query.userId?.$ne && String(doc.userId?._id || doc.userId) === String(query.userId.$ne)) {
+                  return false;
+                }
+                if (query.location?.$geoWithin?.$center) {
+                  const [[cx, cy], maxRadius] = query.location.$geoWithin.$center;
+                  const [x, y] = doc.location;
+                  const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+                  if (dist > maxRadius) {
+                    return false;
+                  }
+                }
+                return true;
+              });
+            }
+          })
+        };
+      });
+    }
+
+    it('should strictly isolate nearby-user queries across 3 virtual offices with identical coordinates', async () => {
+      multiOfficeDataset = [
+        // Office A users
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: userA, displayName: 'User in A' },
+          officeId: officeA,
+          location: [500, 300]
+        },
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: peerA, displayName: 'Peer in A (Close)' },
+          officeId: officeA,
+          location: [520, 300] // distance 20px
+        },
+        // Office B users (identical coordinate [500, 300])
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: userB, displayName: 'User in B' },
+          officeId: officeB,
+          location: [500, 300]
+        },
+        // Office C users (identical coordinate [500, 300])
+        {
+          _id: new mongoose.Types.ObjectId(),
+          userId: { _id: userC, displayName: 'User in C' },
+          officeId: officeC,
+          location: [500, 300]
+        }
+      ];
+
+      multiOfficeMock = setupMultiOfficeMock(multiOfficeDataset);
+      try {
+        // Query Office A: should find Peer in A only
+        const resultsA = await getNearbyUsers({
+          officeId: officeA,
+          location: [500, 300],
+          radius: 100,
+          excludeUserId: userA
+        });
+        assert.strictEqual(resultsA.length, 1);
+        assert.strictEqual(resultsA[0].displayName, 'Peer in A (Close)');
+
+        // Query Office B: sole occupant, should return []
+        const resultsB = await getNearbyUsers({
+          officeId: officeB,
+          location: [500, 300],
+          radius: 100,
+          excludeUserId: userB
+        });
+        assert.strictEqual(resultsB.length, 0, 'Office B should have 0 nearby peers');
+
+        // Query Office C: sole occupant, should return []
+        const resultsC = await getNearbyUsers({
+          officeId: officeC,
+          location: [500, 300],
+          radius: 100,
+          excludeUserId: userC
+        });
+        assert.strictEqual(resultsC.length, 0, 'Office C should have 0 nearby peers');
+      } finally {
+        multiOfficeMock.mock.restore();
+      }
+    });
+
+    it('should strictly isolate getOfficePositions queries across offices without cross-room leakage', async () => {
+      multiOfficeDataset = [
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: userA, displayName: 'User A' }, officeId: officeA, location: [100, 100] },
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: peerA, displayName: 'Peer A' }, officeId: officeA, location: [120, 100] },
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: userB, displayName: 'User B' }, officeId: officeB, location: [200, 200] }
+      ];
+
+      multiOfficeMock = setupMultiOfficeMock(multiOfficeDataset);
+      try {
+        const positionsA = await getOfficePositions(officeA);
+        const positionsB = await getOfficePositions(officeB);
+        const positionsC = await getOfficePositions(officeC);
+
+        assert.strictEqual(positionsA.length, 2, 'Office A should have exactly 2 avatars');
+        assert.strictEqual(positionsB.length, 1, 'Office B should have exactly 1 avatar');
+        assert.strictEqual(positionsC.length, 0, 'Office C should have 0 avatars');
+
+        assert.ok(positionsA.every((p) => [String(userA), String(peerA)].includes(String(p.userId))));
+        assert.strictEqual(String(positionsB[0].userId), String(userB));
+      } finally {
+        multiOfficeMock.mock.restore();
       }
     });
   });

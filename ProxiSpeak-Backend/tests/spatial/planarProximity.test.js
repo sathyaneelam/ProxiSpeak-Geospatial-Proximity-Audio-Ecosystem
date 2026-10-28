@@ -410,6 +410,53 @@ describe('Planar 2D Geometry & Proximity Calculation', () => {
         /Y coordinate \(350\) exceeds office height \(300\)/
       );
     });
+
+    it('14a. should validate high-precision coordinates at interior boundaries and exact corners [1000, 0] and [0, 600]', () => {
+      const boundaryPoints = [
+        [1000, 0], // Top-right corner
+        [0, 600],  // Bottom-left corner
+        [0.001, 0.001], // Just inside top-left
+        [999.999, 0.001], // Just inside top-right
+        [0.001, 599.999], // Just inside bottom-left
+        [999.999, 599.999], // Just inside bottom-right
+        [0.001, 300], // Just inside left edge
+        [999.999, 300], // Just inside right edge
+        [500, 0.001], // Just inside top edge
+        [500, 599.999] // Just inside bottom edge
+      ];
+
+      for (const pt of boundaryPoints) {
+        assert.strictEqual(isPositionWithinOffice(pt, defaultOffice), true, `Point should be within office: ${JSON.stringify(pt)}`);
+        assert.deepStrictEqual(validatePositionInOffice(pt, defaultOffice), pt);
+      }
+    });
+
+    it('14b. should reject coordinates just outside each of the four 1000 × 600 canvas corners diagonally and at edges', () => {
+      const outOfBoundsCases = [
+        // Top-left outside
+        { pt: [-0.001, 300], pattern: /Coordinates must be non-negative/ },
+        { pt: [500, -0.001], pattern: /Coordinates must be non-negative/ },
+        { pt: [-0.001, -0.001], pattern: /Coordinates must be non-negative/ },
+        // Top-right outside
+        { pt: [1000.001, 300], pattern: /X coordinate \(1000\.001\) exceeds office width \(1000\)/ },
+        { pt: [1000.001, -0.001], pattern: /Coordinates must be non-negative/ },
+        // Bottom-left outside
+        { pt: [500, 600.001], pattern: /Y coordinate \(600\.001\) exceeds office height \(600\)/ },
+        { pt: [-0.001, 600.001], pattern: /Coordinates must be non-negative/ },
+        // Bottom-right outside
+        { pt: [1000.001, 600.001], pattern: /X coordinate \(1000\.001\) exceeds office width \(1000\)/ },
+        { pt: [1001, 601], pattern: /X coordinate \(1001\) exceeds office width \(1000\)/ }
+      ];
+
+      for (const { pt, pattern } of outOfBoundsCases) {
+        assert.strictEqual(isPositionWithinOffice(pt, defaultOffice), false, `Point should be outside office: ${JSON.stringify(pt)}`);
+        assert.throws(
+          () => validatePositionInOffice(pt, defaultOffice),
+          pattern,
+          `Expected pattern ${pattern} for point ${JSON.stringify(pt)}`
+        );
+      }
+    });
   });
 
   // =========================================================================

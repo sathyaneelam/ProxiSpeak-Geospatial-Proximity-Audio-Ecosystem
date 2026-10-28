@@ -325,6 +325,28 @@ t &= \text{clamp}\left(\frac{d}{100}, 0, 1\right) \\
   - $dx = +100\text{px} \rightarrow \text{Pan} = +1.0$ (full right)
   - Clamped strictly within $[-1.0, 1.0]$.
 
+### 3.6 Database Edge-Case & Persistence Validation Contract
+
+To guarantee robust database operations under real-world network fluctuations and high-frequency coordinate streaming, the system adheres to strict persistence and validation invariants:
+
+1. **Invalid Position Data Handling:**
+   - Pre-validation via `validateCoordinates`: Any coordinate payload that is missing (`null`, `undefined`), not a 2-element array (`[]`, `[x]`, `[x, y, z]`, objects, strings), or containing non-numeric elements, `NaN`, `Infinity`, or `-Infinity` is rejected immediately prior to constructing database queries or updates.
+   - Schema enforcement: `LivePosition` schema rejects malformed arrays, non-finite values, and negative coordinates with descriptive validation errors.
+
+2. **Office Boundaries (1000 × 600 Canvas):**
+   - Coordinates at valid boundary limits ($[0, 0]$, $[1000, 0]$, $[0, 600]$, $[1000, 600]$, and perimeter edges) are accepted and evaluated accurately.
+   - Coordinates outside the room canvas ($x < 0, y < 0, x > \text{width}, y > \text{height}$) are rejected by `validatePositionInOffice` and reported as `false` by `isPositionWithinOffice`.
+
+3. **Persistence Integrity & Document Invariance:**
+   - Updating an existing user's live position via `updatePosition` or re-invoking `upsertPosition` updates the single existing document in-place, preserving its original `_id`.
+   - Distinct users maintain strict persistence isolation: updates to User A never mutate or overwrite User B's record.
+   - Rejection of invalid updates leaves existing persisted documents completely uncorrupted.
+   - Duplicate records are strictly prevented by the unique index constraint `{ userId: 1 }`.
+
+4. **Multi-Office Partitioning & Isolation:**
+   - Position updates across offices dynamically rebind avatars to the destination room in-place.
+   - Both `getNearbyUsers` and `getOfficePositions` partition results strictly by `officeId`. Users sharing identical planar coordinates across different offices are isolated with zero cross-office audio or avatar leakage.
+
 ---
 
 ## 4. Backend Service Contracts & Socket.io Integration
