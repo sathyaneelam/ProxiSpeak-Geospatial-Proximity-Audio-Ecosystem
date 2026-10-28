@@ -1,25 +1,32 @@
+require("dotenv").config();
+require("dotenv").config();
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const http = require("http");
 const app = require("../src/app");
-
+const connectDB = require("../src/config/database");
 describe("REST API Integration Tests", () => {
   let server;
   let baseUrl;
 
-  before(async () => {
-    server = http.createServer(app);
-    await new Promise((resolve) => server.listen(0, resolve));
-    const port = server.address().port;
-    baseUrl = `http://127.0.0.1:${port}`;
-  });
+ before(async () => {
+  await connectDB();
 
-  after(async () => {
-    if (server) {
-      await new Promise((resolve) => server.close(resolve));
-    }
-  });
+  server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  baseUrl = `http://127.0.0.1:${port}`;
+});
+
+ after(async () => {
+  if (server) {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  const mongoose = require("mongoose");
+  await mongoose.disconnect();
+});
 
   it("GET / should return 200 and project info", async () => {
     const res = await fetch(`${baseUrl}/`);
@@ -133,5 +140,22 @@ describe("REST API Integration Tests", () => {
     const data = await res.json();
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "x and y must be valid numbers");
+  });
+
+  it("POST /api/positions with a non-existing user should return 404", async () => {
+    const res = await fetch(`${baseUrl}/api/positions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: "507f1f77bcf86cd799439011",
+        x: 100,
+        y: 100,
+      }),
+    });
+
+    assert.strictEqual(res.status, 404);
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "User not found");
   });
 });
