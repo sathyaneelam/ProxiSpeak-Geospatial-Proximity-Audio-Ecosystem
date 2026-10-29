@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import './MeetingLobby.css'
+import PreJoinCheck from './PreJoinCheck.jsx'
 import { createRoomCode, formatRoomCode, inviteLink, roomIdFromCode } from './roomCodes.js'
 
 const DEFAULT_COLOR = '#22d3ee'
@@ -162,6 +163,7 @@ export default function MeetingLobby() {
             {copied && <p className="ml-success" role="status">{copied === 'link' ? 'Invite link' : 'Room code'} copied!</p>}
             <label className="ml-field-label" htmlFor="ml-display-name">Your display name</label>
             <input id="ml-display-name" className="ml-display-input" value={displayName} maxLength={20} onChange={e=>{setDisplayName(e.target.value);setNotice('')}} placeholder="What should teammates call you?" autoComplete="nickname" />
+            <PreJoinCheck />
             <button className="ml-primary" type="button" onClick={enterOffice}>Enter virtual office <Icon name="arrow" size={19}/></button>
           </>}
           {notice && <p className="ml-alert" role="alert">{notice}</p>}
