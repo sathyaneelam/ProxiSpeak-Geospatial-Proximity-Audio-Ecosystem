@@ -1,32 +1,34 @@
-require("dotenv").config();
+
 require("dotenv").config();
 
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const http = require("http");
+const mongoose = require("mongoose");
 const app = require("../src/app");
 const connectDB = require("../src/config/database");
+
 describe("REST API Integration Tests", () => {
   let server;
   let baseUrl;
 
- before(async () => {
-  await connectDB();
+  before(async () => {
+    await connectDB();
 
-  server = http.createServer(app);
-  await new Promise((resolve) => server.listen(0, resolve));
-  const port = server.address().port;
-  baseUrl = `http://127.0.0.1:${port}`;
-});
+    server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
 
- after(async () => {
-  if (server) {
-    await new Promise((resolve) => server.close(resolve));
-  }
+    const port = server.address().port;
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
 
-  const mongoose = require("mongoose");
-  await mongoose.disconnect();
-});
+  after(async () => {
+    if (server) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+
+    await mongoose.disconnect();
+  });
 
   it("GET / should return 200 and project info", async () => {
     const res = await fetch(`${baseUrl}/`);
@@ -157,5 +159,45 @@ describe("REST API Integration Tests", () => {
     const data = await res.json();
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "User not found");
+  });
+
+  it("GET /api/positions/:userId should return a saved position", async () => {
+    const User = require("../src/models/User");
+    const Position = require("../src/models/Position");
+
+    let user;
+
+    try {
+      user = await User.create({
+        displayName: "Position Test User",
+      });
+
+      await Position.create({
+        userId: user._id,
+        x: 25,
+        y: 40,
+      });
+
+      const res = await fetch(
+        `${baseUrl}/api/positions/${user._id.toString()}`
+      );
+
+      assert.strictEqual(res.status, 200);
+
+      const data = await res.json();
+      assert.strictEqual(data.status, "success");
+      assert.strictEqual(data.data.x, 25);
+      assert.strictEqual(data.data.y, 40);
+      assert.strictEqual(
+        data.data.userId.toString(),
+        user._id.toString()
+      );
+    } finally {
+      if (user) {
+        const Position = require("../src/models/Position");
+        await Position.deleteOne({ userId: user._id });
+        await User.deleteOne({ _id: user._id });
+      }
+    }
   });
 });
