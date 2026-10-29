@@ -149,6 +149,7 @@ export class SpatialAudioGraph {
     }
 
     this.peerNodes.set(peerId, {
+      stream,
       source,
       gainNode,
       pannerNode,
@@ -330,6 +331,7 @@ export class SpatialAudioGraph {
 
   /**
    * Removes and disconnects a peer from the audio graph.
+   * Safe to call multiple times and does not affect other peers.
    * @param {string} peerId
    */
   removePeer(peerId) {
@@ -337,14 +339,48 @@ export class SpatialAudioGraph {
     if (!peerData) return;
 
     try {
-      peerData.source.disconnect();
-      peerData.gainNode.disconnect();
-      if (peerData.pannerNode) {
-        peerData.pannerNode.disconnect();
+      // Immediately silence gain node to prevent clicks or stale audio buffers
+      if (peerData.gainNode && peerData.gainNode.gain) {
+        try {
+          if (this.audioContext && typeof this.audioContext.currentTime === 'number') {
+            peerData.gainNode.gain.cancelScheduledValues?.(this.audioContext.currentTime);
+            peerData.gainNode.gain.setValueAtTime?.(0.0, this.audioContext.currentTime);
+          } else {
+            peerData.gainNode.gain.value = 0.0;
+          }
+        } catch {
+          peerData.gainNode.gain.value = 0.0;
+        }
       }
+
+      // Stop all tracks associated with this peer stream to prevent stale audio
+      if (peerData.stream) {
+        try {
+          peerData.stream.getTracks().forEach((track) => track.stop());
+        } catch {
+          // Ignore
+        }
+      }
+      if (peerData.source && peerData.source.mediaStream) {
+        try {
+          peerData.source.mediaStream.getTracks().forEach((track) => track.stop());
+        } catch {
+          // Ignore
+        }
+      }
+
+      // Disconnect audio nodes
+      peerData.source?.disconnect();
+      peerData.gainNode?.disconnect();
+      peerData.pannerNode?.disconnect();
+
+      // Pause and clear dummy companion audio element to release WebRTC decoders
       if (peerData.dummyAudio) {
         peerData.dummyAudio.pause();
         peerData.dummyAudio.srcObject = null;
+        if (typeof peerData.dummyAudio.load === 'function') {
+          peerData.dummyAudio.load();
+        }
       }
     } catch (err) {
       console.warn(`[SpatialAudioGraph] Cleanup warning for peer ${peerId}:`, err);

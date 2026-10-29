@@ -53,6 +53,7 @@ export class BaseSignalingTransport {
   sendOffer() {}
   sendAnswer() {}
   sendIceCandidate() {}
+  sendPeerDisconnect() {}
   updatePosition() {}
   leaveVoice() {}
 }
@@ -179,6 +180,10 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       }
     });
 
+    this.socket.on(SIGNALING_EVENTS.WEBRTC_DISCONNECT, (data) => {
+      this.emitLocal(SIGNALING_EVENTS.WEBRTC_DISCONNECT, data);
+    });
+
     // Member 2 Server error event
     this.socket.on(SIGNALING_EVENTS.WEBRTC_ERROR, (err) => {
       this.emitLocal(SIGNALING_EVENTS.WEBRTC_ERROR, err);
@@ -253,6 +258,16 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       candidate,
     });
     this.socket.emit(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, payload);
+  }
+
+  sendPeerDisconnect({ toUserId }) {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SIGNALING_EVENTS.WEBRTC_DISCONNECT, {
+      fromUserId: this.userId,
+      toUserId,
+      officeId: this.officeId,
+      timestamp: Date.now(),
+    });
   }
 
   updatePosition(position) {
@@ -368,6 +383,15 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       candidate,
     });
     this._broadcast(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, payload);
+  }
+
+  sendPeerDisconnect({ toUserId }) {
+    this._broadcast(SIGNALING_EVENTS.WEBRTC_DISCONNECT, {
+      fromUserId: this.userId,
+      toUserId,
+      officeId: this.officeId,
+      timestamp: Date.now(),
+    });
   }
 
   updatePosition(position) {

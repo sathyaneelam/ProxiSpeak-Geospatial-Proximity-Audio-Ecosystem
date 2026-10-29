@@ -89,6 +89,7 @@ export function useProximityAudio({
         localUserId: userId,
         officeId,
         signalingTransport: transport,
+        spatialAudioGraph: spatialGraphRef.current,
         onRemoteStream: (peerId, stream) => {
           const peer = peers.find((p) => p.id === peerId || p.name === peerId);
           const peerPos = peer ? { x: peer.x, y: peer.y } : { x: 0, y: 0 };
@@ -285,6 +286,16 @@ export function useProximityAudio({
 
     // Send position update to peers if signaling is connected
     signalingRef.current?.updatePosition(localPosition);
+
+    // Prune and cleanly disconnect peers that are no longer in the active peers list
+    if (peerManagerRef.current) {
+      const activePeerIds = new Set(peers.map((p) => p.id || p.name));
+      for (const connectedPeerId of Array.from(peerManagerRef.current.peers.keys())) {
+        if (!activePeerIds.has(connectedPeerId)) {
+          peerManagerRef.current.closePeer(connectedPeerId);
+        }
+      }
+    }
 
     const nextMetrics = {};
 

@@ -31,6 +31,7 @@ export class AudioSignalingAdapter {
       'webrtc:offer': this._handleWebRTCOffer.bind(this),
       'webrtc:answer': this._handleWebRTCAnswer.bind(this),
       'webrtc:ice-candidate': this._handleWebRTCIceCandidate.bind(this),
+      'webrtc:peer-disconnect': this._handlePeerDisconnect.bind(this),
       'webrtc:error': this._handleWebRTCError.bind(this),
       'user:left': this._handleUserLeft.bind(this),
     };
@@ -109,8 +110,11 @@ export class AudioSignalingAdapter {
    * @private
    */
   _handleProximityLeave(data) {
-    if (!data || !data.peerSocketId) return;
-    this.peerConnectionManager.closePeer(data.peerSocketId);
+    if (!data) return;
+    const target = data.peerSocketId || data.peerUserId || data.userId;
+    if (target) {
+      this.peerConnectionManager.closePeer(target);
+    }
   }
 
   /**
@@ -184,12 +188,27 @@ export class AudioSignalingAdapter {
   }
 
   /**
+   * Triggered when a peer disconnects explicitly via WebRTC disconnect message.
+   * @private
+   */
+  _handlePeerDisconnect(data) {
+    if (!data) return;
+    const target = data.peerId || data.peerUserId || data.socketId || data.userId || data.from;
+    if (target) {
+      this.peerConnectionManager.closePeer(target);
+    }
+  }
+
+  /**
    * Triggered when a peer disconnects from the office room.
    * Payload: { socketId: string, userId: string }
    * @private
    */
   _handleUserLeft(data) {
-    if (!data || !data.socketId) return;
-    this.peerConnectionManager.closePeer(data.socketId);
+    if (!data) return;
+    const target = data.socketId || data.userId || data.peerUserId;
+    if (target) {
+      this.peerConnectionManager.closePeer(target);
+    }
   }
 }

@@ -6,6 +6,7 @@ import { WebRTCPeerManager, getRTCConfiguration } from '../webrtcPeerManager.js'
 class MockRTCPeerConnection {
   constructor() {
     this.connectionState = 'new';
+    this.iceConnectionState = 'new';
     this.signalingState = 'stable';
     this.remoteDescription = null;
     this.localDescription = null;
@@ -14,6 +15,7 @@ class MockRTCPeerConnection {
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
+    this.oniceconnectionstatechange = null;
   }
 
   getSenders() {
@@ -66,6 +68,9 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
       }
       addTrack(t) {
         this.tracks.push(t);
+      }
+      removeTrack(t) {
+        this.tracks = this.tracks.filter((track) => track !== t);
       }
       getTracks() {
         return this.tracks;
@@ -146,6 +151,171 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
 
     manager.destroy();
     assert.equal(manager.peers.size, 0);
+  });
+
+  test('closePeer clears pending ICE candidates and stops remote stream tracks', async () => {
+    const removedPeers = [];
+    const mockSpatialAudioGraph = {
+      removed: [],
+      removePeer(id) {
+        this.removed.push(id);
+      },
+    };
+
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-clean',
+      spatialAudioGraph: mockSpatialAudioGraph,
+      onPeerRemoved: (id) => removedPeers.push(id),
+    });
+
+    const session = manager.getOrCreatePeer('remote-clean');
+
+    // Add a remote track
+    let trackStopped = false;
+    const track = {
+      kind: 'audio',
+      stop() {
+        trackStopped = true;
+      },
+    };
+    session.remoteStream.addTrack(track);
+
+    // Buffer an ICE candidate
+    await manager.handleRemoteIceCandidate('remote-clean', { candidate: 'cand-buffered' });
+    assert.equal(session.iceCandidateBuffer.length, 1);
+
+    // Close peer
+    manager.closePeer('remote-clean');
+
+    // Verify PC is closed
+    assert.equal(session.pc.connectionState, 'closed');
+    // Verify candidate buffer is cleared
+    assert.equal(session.iceCandidateBuffer.length, 0);
+    // Verify track stopped and removed from stream
+    assert.equal(trackStopped, true);
+    assert.equal(session.remoteStream.getTracks().length, 0);
+    // Verify spatial audio graph and callback notified
+    assert.deepEqual(mockSpatialAudioGraph.removed, ['remote-clean']);
+    assert.deepEqual(removedPeers, ['remote-clean']);
+    // Verify removed from map
+    assert.equal(manager.peers.has('remote-clean'), false);
+  });
+
+  test('closePeer is safe to call multiple times (idempotent)', () => {
+    let removeCount = 0;
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-idem',
+      onPeerRemoved: () => {
+        removeCount += 1;
+      },
+    });
+
+    manager.getOrCreatePeer('remote-idem');
+    assert.equal(manager.peers.has('remote-idem'), true);
+
+    // First close
+    manager.closePeer('remote-idem');
+    assert.equal(removeCount, 1);
+    assert.equal(manager.peers.has('remote-idem'), false);
+
+    // Second close should be safe no-op
+    assert.doesNotThrow(() => {
+      manager.closePeer('remote-idem');
+    });
+    assert.equal(removeCount, 1);
+
+    // Closing non-existent peer is safe no-op
+    assert.doesNotThrow(() => {
+      manager.closePeer('non-existent');
+    });
+    assert.equal(removeCount, 1);
+  });
+
+  test('closePeer does not affect other active peers (peer isolation)', () => {
+    const manager = new WebRTCPeerManager({ localUserId: 'local-iso' });
+    const sessionA = manager.getOrCreatePeer('peer-A');
+    const sessionB = manager.getOrCreatePeer('peer-B');
+
+    assert.equal(manager.peers.size, 2);
+
+    manager.closePeer('peer-A');
+    assert.equal(manager.peers.has('peer-A'), false);
+    assert.equal(sessionA.pc.connectionState, 'closed');
+
+    // Peer B remains alive and untouched
+    assert.equal(manager.peers.has('peer-B'), true);
+    assert.equal(sessionB.pc.connectionState, 'new');
+    assert.equal(manager.peers.size, 1);
+
+    manager.destroy();
+  });
+
+  test('pc.onconnectionstatechange triggers closePeer on disconnected state', () => {
+    const manager = new WebRTCPeerManager({ localUserId: 'local-disc' });
+    const session = manager.getOrCreatePeer('peer-disc');
+
+    assert.equal(manager.peers.has('peer-disc'), true);
+
+    // Simulate connectionState transitioning to 'disconnected'
+    session.pc.connectionState = 'disconnected';
+    session.pc.onconnectionstatechange();
+
+    // Verify peer was automatically closed and removed
+    assert.equal(manager.peers.has('peer-disc'), false);
+    assert.equal(session.pc.connectionState, 'closed');
+  });
+
+  test('getOrCreatePeer replaces a stale or disconnected peer connection', () => {
+    const manager = new WebRTCPeerManager({ localUserId: 'local-reconnect' });
+    const sessionOld = manager.getOrCreatePeer('peer-reconnect');
+
+    // Simulate stale disconnected state
+    sessionOld.pc.connectionState = 'disconnected';
+
+    // Calling getOrCreatePeer should evict the stale session and create a fresh one
+    const sessionNew = manager.getOrCreatePeer('peer-reconnect');
+    assert.notEqual(sessionOld, sessionNew);
+    assert.equal(sessionOld.pc.connectionState, 'closed');
+    assert.equal(sessionNew.pc.connectionState, 'new');
+    assert.equal(manager.peers.get('peer-reconnect'), sessionNew);
+  });
+
+  test('handleRemoteIceCandidate drops candidates safely if connection is closed or disconnected', async () => {
+    const manager = new WebRTCPeerManager({ localUserId: 'local-ice' });
+    const session = manager.getOrCreatePeer('peer-ice');
+
+    session.pc.connectionState = 'closed';
+
+    await assert.doesNotReject(async () => {
+      await manager.handleRemoteIceCandidate('peer-ice', { candidate: 'candidate:foo' });
+    });
+    assert.equal(session.iceCandidateBuffer.length, 0);
+  });
+
+  test('signaling event webrtc:peer-disconnect closes peer cleanly', () => {
+    const listeners = new Map();
+    const mockTransport = {
+      on(event, handler) {
+        listeners.set(event, handler);
+        return () => listeners.delete(event);
+      },
+    };
+
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-sig',
+      signalingTransport: mockTransport,
+    });
+
+    const session = manager.getOrCreatePeer('remote-sig');
+    assert.equal(manager.peers.has('remote-sig'), true);
+
+    // Fire webrtc:peer-disconnect event
+    const disconnectHandler = listeners.get('webrtc:peer-disconnect');
+    assert.ok(disconnectHandler);
+    disconnectHandler({ peerId: 'remote-sig' });
+
+    assert.equal(manager.peers.has('remote-sig'), false);
+    assert.equal(session.pc.connectionState, 'closed');
   });
 
   test('getRTCConfiguration provides default STUN servers and incorporates TURN from env', () => {

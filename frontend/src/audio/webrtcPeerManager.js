@@ -73,6 +73,7 @@ export class WebRTCPeerManager {
     this.localUserId = options.localUserId || `user_${Math.random().toString(36).slice(2, 8)}`;
     this.officeId = options.officeId || 'default-office';
     this.signalingTransport = options.signalingTransport;
+    this.spatialAudioGraph = options.spatialAudioGraph || options.audioGraph || null;
     this.rtcConfig = options.rtcConfig ? getRTCConfiguration(options.rtcConfig) : getRTCConfiguration();
 
     this.onRemoteStream = options.onRemoteStream || (() => {});
@@ -157,6 +158,20 @@ export class WebRTCPeerManager {
         if (peerId) this.closePeer(peerId);
       })
     );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on('webrtc:peer-disconnect', (payload) => {
+        const peerId = payload.peerId || payload.peerUserId || payload.userId || payload.from;
+        if (peerId) this.closePeer(peerId);
+      })
+    );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on('user:left', (payload) => {
+        const peerId = payload.userId || payload.peerUserId || payload.socketId;
+        if (peerId) this.closePeer(peerId);
+      })
+    );
   }
 
   /**
@@ -179,7 +194,12 @@ export class WebRTCPeerManager {
 
     if (this.peers.has(peerId)) {
       const existing = this.peers.get(peerId);
-      if (existing.pc && existing.pc.connectionState !== 'closed') {
+      const isAlive =
+        existing.pc &&
+        existing.pc.connectionState !== 'closed' &&
+        existing.pc.connectionState !== 'failed' &&
+        existing.pc.connectionState !== 'disconnected';
+      if (isAlive) {
         return existing;
       }
       this.closePeer(peerId);
@@ -259,7 +279,14 @@ export class WebRTCPeerManager {
       const state = pc.connectionState;
       this.onPeerConnectionState(peerId, state);
 
-      if (state === 'failed' || state === 'closed') {
+      if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+        this.closePeer(peerId);
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const iceState = pc.iceConnectionState;
+      if (iceState === 'failed' || iceState === 'closed') {
         this.closePeer(peerId);
       }
     };
@@ -372,6 +399,13 @@ export class WebRTCPeerManager {
     if (!session) return;
 
     const pc = session.pc;
+    if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      if (session.iceCandidateBuffer) {
+        session.iceCandidateBuffer.length = 0;
+      }
+      return;
+    }
+
     if (!pc.remoteDescription || !pc.remoteDescription.type) {
       // Buffer until remote description has been applied
       session.iceCandidateBuffer.push(candidateInit);
@@ -388,7 +422,11 @@ export class WebRTCPeerManager {
   }
 
   async _drainIceCandidateBuffer(session) {
-    while (session.iceCandidateBuffer.length > 0) {
+    while (session.iceCandidateBuffer && session.iceCandidateBuffer.length > 0) {
+      if (!session.pc || session.pc.connectionState === 'closed' || session.pc.connectionState === 'disconnected' || session.pc.connectionState === 'failed') {
+        session.iceCandidateBuffer.length = 0;
+        break;
+      }
       const candidateInit = session.iceCandidateBuffer.shift();
       try {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidateInit));
@@ -402,6 +440,7 @@ export class WebRTCPeerManager {
 
   /**
    * Safely closes a single peer connection and releases resources.
+   * Safe to call multiple times and does not affect other peers.
    * @param {string} peerId
    */
   closePeer(peerId) {
@@ -409,21 +448,49 @@ export class WebRTCPeerManager {
     if (!session) return;
 
     try {
+      // Clear pending ICE candidates to prevent processing after disconnection
+      if (session.iceCandidateBuffer) {
+        session.iceCandidateBuffer.length = 0;
+      }
+
       if (session.pc) {
         session.pc.ontrack = null;
         session.pc.onicecandidate = null;
         session.pc.onnegotiationneeded = null;
         session.pc.onconnectionstatechange = null;
+        session.pc.oniceconnectionstatechange = null;
         if (session.pc.connectionState !== 'closed') {
           session.pc.close();
         }
       }
 
       if (session.remoteStream) {
-        session.remoteStream.getTracks().forEach((t) => t.stop());
+        session.remoteStream.getTracks().forEach((t) => {
+          try {
+            t.stop();
+          } catch {
+            // Ignore
+          }
+          if (typeof session.remoteStream.removeTrack === 'function') {
+            try {
+              session.remoteStream.removeTrack(t);
+            } catch {
+              // Ignore
+            }
+          }
+        });
       }
     } catch (err) {
       console.warn(`[WebRTCPeerManager] Error closing peer ${peerId}:`, err);
+    }
+
+    // Safely remove peer from spatial audio graph if attached
+    if (this.spatialAudioGraph && typeof this.spatialAudioGraph.removePeer === 'function') {
+      try {
+        this.spatialAudioGraph.removePeer(peerId);
+      } catch (err) {
+        console.warn(`[WebRTCPeerManager] Error removing peer ${peerId} from spatial audio graph:`, err);
+      }
     }
 
     this.peers.delete(peerId);

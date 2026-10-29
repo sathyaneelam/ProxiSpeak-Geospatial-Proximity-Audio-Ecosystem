@@ -412,22 +412,81 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     graph.destroy();
   });
 
-  test('removePeer disconnects peer audio nodes cleanly', () => {
+  test('removePeer silences gain, stops stream tracks, and disconnects peer audio nodes cleanly', () => {
     const graph = new SpatialAudioGraph();
     const stream = createMockStream();
 
     graph.addPeerStream('peer-david', stream, { x: 0, y: 0 }, { x: 0, y: 0 }, 100);
     const peerData = graph.peerNodes.get('peer-david');
+    const track = stream.getTracks()[0];
 
     assert.equal(peerData.source.isDisconnected, false);
     assert.equal(peerData.gainNode.isDisconnected, false);
     assert.equal(peerData.pannerNode.isDisconnected, false);
+    assert.equal(track.readyState, 'live');
 
     graph.removePeer('peer-david');
     assert.equal(graph.peerNodes.has('peer-david'), false);
+    assert.equal(peerData.gainNode.gain.value, 0.0);
+    assert.equal(track.readyState, 'ended');
     assert.equal(peerData.source.isDisconnected, true);
     assert.equal(peerData.gainNode.isDisconnected, true);
     assert.equal(peerData.pannerNode.isDisconnected, true);
+
+    graph.destroy();
+  });
+
+  test('removePeer is safe to call multiple times (idempotent)', () => {
+    const graph = new SpatialAudioGraph();
+    const stream = createMockStream();
+
+    graph.addPeerStream('peer-idem', stream, { x: 0, y: 0 }, { x: 0, y: 0 }, 100);
+    assert.equal(graph.peerNodes.has('peer-idem'), true);
+
+    // First call
+    graph.removePeer('peer-idem');
+    assert.equal(graph.peerNodes.has('peer-idem'), false);
+
+    // Second call must be a safe no-op
+    assert.doesNotThrow(() => {
+      graph.removePeer('peer-idem');
+    });
+
+    // Calling removePeer with a non-existent peer is safe no-op
+    assert.doesNotThrow(() => {
+      graph.removePeer('non-existent');
+    });
+
+    graph.destroy();
+  });
+
+  test('removePeer does not affect other active peers in the graph (peer isolation)', () => {
+    const graph = new SpatialAudioGraph();
+    const streamA = createMockStream();
+    const streamB = createMockStream();
+
+    graph.addPeerStream('peer-A', streamA, { x: 20, y: 0 }, { x: 0, y: 0 }, 100);
+    graph.addPeerStream('peer-B', streamB, { x: 50, y: 0 }, { x: 0, y: 0 }, 100);
+
+    const peerDataB = graph.peerNodes.get('peer-B');
+    const gainB = peerDataB.lastGain;
+    assert.ok(gainB > 0);
+
+    // Remove peer A
+    graph.removePeer('peer-A');
+    assert.equal(graph.peerNodes.has('peer-A'), false);
+
+    // Peer B must remain untouched and connected
+    assert.equal(graph.peerNodes.has('peer-B'), true);
+    assert.equal(peerDataB.source.isDisconnected, false);
+    assert.equal(peerDataB.gainNode.isDisconnected, false);
+    assert.equal(peerDataB.pannerNode.isDisconnected, false);
+    assert.equal(peerDataB.lastGain, gainB);
+
+    // Metrics for peer B remain intact
+    const metricsB = graph.getPeerSpatialMetrics('peer-B');
+    assert.ok(metricsB);
+    assert.equal(metricsB.distance, 50);
 
     graph.destroy();
   });
