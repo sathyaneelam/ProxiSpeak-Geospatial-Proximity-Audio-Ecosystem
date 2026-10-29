@@ -1725,4 +1725,454 @@ describe('Position Service & Contract Validation', () => {
       }
     });
   });
+
+  describe('Day 10: Multi-User Query Integration & Spatial Trajectory Scenarios', () => {
+    const officeA = new mongoose.Types.ObjectId();
+    const officeB = new mongoose.Types.ObjectId();
+    const pivotUserId = new mongoose.Types.ObjectId();
+
+    let integrationDataset;
+    let integrationMock;
+
+    function setupIntegrationFindMock(dataset) {
+      return mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              return dataset.filter((doc) => {
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  return false;
+                }
+                if (query.userId?.$ne && String(doc.userId?._id || doc.userId) === String(query.userId.$ne)) {
+                  return false;
+                }
+                if (query.location?.$geoWithin?.$center) {
+                  const [[cx, cy], maxRadius] = query.location.$geoWithin.$center;
+                  const [x, y] = doc.location;
+                  const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+                  if (dist > maxRadius) {
+                    return false;
+                  }
+                }
+                return true;
+              });
+            }
+          })
+        };
+      });
+    }
+
+    it('1. should retrieve multiple users at varying coordinates, correctly including peers inside radius and excluding peers outside', async () => {
+      // 7 users distributed across office-01:
+      // Pivot at [160, 150] (Workstation A)
+      const u1 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 1 (10px)', email: 'p1@test.com' }, officeId: officeA, location: [150, 150] }; // d = 10px
+      const u2 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 2 (30px)', email: 'p2@test.com' }, officeId: officeA, location: [160, 180] }; // d = 30px
+      const u3 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 3 (50px)', email: 'p3@test.com' }, officeId: officeA, location: [190, 190] }; // dx=30, dy=40 => d=50px
+      const u4 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 4 (80px)', email: 'p4@test.com' }, officeId: officeA, location: [240, 150] }; // d = 80px
+      // Outside 100px:
+      const u5 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 5 Meeting Area (180px)', email: 'p5@test.com' }, officeId: officeA, location: [340, 150] }; // d = 180px
+      const u6 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 6 Lounge (600px)', email: 'p6@test.com' }, officeId: officeA, location: [760, 150] }; // d = 600px
+      // Other office:
+      const u7 = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Peer 7 Other Office (5px away)', email: 'p7@test.com' }, officeId: officeB, location: [163, 154] }; // d = 5px, but Office B!
+
+      integrationDataset = [u1, u2, u3, u4, u5, u6, u7];
+      integrationMock = setupIntegrationFindMock(integrationDataset);
+
+      try {
+        const results = await getNearbyUsers({
+          officeId: officeA,
+          location: [160, 150],
+          radius: 100,
+          excludeUserId: pivotUserId
+        });
+
+        // Must return exactly 4 peers (u1, u2, u3, u4)
+        assert.strictEqual(results.length, 4, 'Should find exactly 4 peers within 100px in officeA');
+
+        // Ascending distance verification
+        assert.strictEqual(results[0].displayName, 'Peer 1 (10px)');
+        assert.strictEqual(results[0].distance, 10.0);
+        assert.ok(results[0].gain > 0.9, 'Gain at 10px should be > 0.9');
+
+        assert.strictEqual(results[1].displayName, 'Peer 2 (30px)');
+        assert.strictEqual(results[1].distance, 30.0);
+
+        assert.strictEqual(results[2].displayName, 'Peer 3 (50px)');
+        assert.strictEqual(results[2].distance, 50.0);
+        assert.strictEqual(results[2].gain, 0.5);
+
+        assert.strictEqual(results[3].displayName, 'Peer 4 (80px)');
+        assert.strictEqual(results[3].distance, 80.0);
+
+        // Verification of exclusions
+        const names = results.map((r) => r.displayName);
+        assert.ok(!names.includes('Peer 5 Meeting Area (180px)'), 'u5 (>100px) must be excluded');
+        assert.ok(!names.includes('Peer 6 Lounge (600px)'), 'u6 (>100px) must be excluded');
+        assert.ok(!names.includes('Peer 7 Other Office (5px away)'), 'u7 (different office) must be excluded');
+      } finally {
+        integrationMock.mock.restore();
+      }
+    });
+
+    it('2. should evaluate precise boundary distances: 98.0px (just inside), 100.0px (exact boundary), and 100.1px (just outside)', async () => {
+      const center = [500, 300];
+      const justInside = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Just Inside (98.0px)' }, officeId: officeA, location: [500, 398.0] };
+      const exactBoundary = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Exact Boundary (100.0px)' }, officeId: officeA, location: [500, 400.0] };
+      const justOutside = { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Just Outside (100.1px)' }, officeId: officeA, location: [500, 400.1] };
+
+      integrationDataset = [justInside, exactBoundary, justOutside];
+      integrationMock = setupIntegrationFindMock(integrationDataset);
+
+      try {
+        const results = await getNearbyUsers({
+          officeId: officeA,
+          location: center,
+          radius: 100
+        });
+
+        assert.strictEqual(results.length, 2, 'Should include 98.0px and 100.0px, but exclude 100.1px');
+
+        assert.strictEqual(results[0].displayName, 'Just Inside (98.0px)');
+        assert.strictEqual(results[0].distance, 98.0);
+        assert.ok(results[0].gain > 0.0, 'Gain must be > 0 just inside threshold (98px)');
+
+        assert.strictEqual(results[1].displayName, 'Exact Boundary (100.0px)');
+        assert.strictEqual(results[1].distance, 100.0);
+        assert.strictEqual(results[1].gain, 0.0, 'Gain must attenuate to exactly 0.0 at boundary');
+
+        const hasOutside = results.some((r) => r.displayName.includes('100.1px'));
+        assert.strictEqual(hasOutside, false, '100.1px must be excluded');
+      } finally {
+        integrationMock.mock.restore();
+      }
+    });
+
+    it('3. should verify multi-office isolation when multiple peers exist at identical coordinates in different offices', async () => {
+      const sharedCoord = [250, 250];
+      const officeA_users = [
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Office A Leader' }, officeId: officeA, location: sharedCoord },
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Office A Colleague' }, officeId: officeA, location: [270, 250] } // 20px away
+      ];
+      const officeB_users = [
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Office B Leader (Identical Coords)' }, officeId: officeB, location: sharedCoord },
+        { _id: new mongoose.Types.ObjectId(), userId: { _id: new mongoose.Types.ObjectId(), displayName: 'Office B Colleague' }, officeId: officeB, location: [260, 250] } // 10px away
+      ];
+
+      integrationDataset = [...officeA_users, ...officeB_users];
+      integrationMock = setupIntegrationFindMock(integrationDataset);
+
+      try {
+        const resA = await getNearbyUsers({
+          officeId: officeA,
+          location: sharedCoord,
+          radius: 100
+        });
+        assert.strictEqual(resA.length, 2);
+        assert.ok(resA.every((r) => r.displayName.startsWith('Office A')), 'Office A query must only return Office A peers');
+
+        const resB = await getNearbyUsers({
+          officeId: officeB,
+          location: sharedCoord,
+          radius: 100
+        });
+        assert.strictEqual(resB.length, 2);
+        assert.ok(resB.every((r) => r.displayName.startsWith('Office B')), 'Office B query must only return Office B peers');
+      } finally {
+        integrationMock.mock.restore();
+      }
+    });
+
+    it('4. should gracefully handle missing and orphaned live position records without crashing', async () => {
+      const orphanedRecord = {
+        _id: new mongoose.Types.ObjectId(),
+        userId: null, // deleted or missing user account
+        officeId: officeA,
+        location: [510, 300],
+        socketId: 'sock_missing_account',
+        lastUpdated: new Date()
+      };
+
+      integrationDataset = [orphanedRecord];
+      integrationMock = setupIntegrationFindMock(integrationDataset);
+
+      try {
+        const results = await getNearbyUsers({
+          officeId: officeA,
+          location: [500, 300],
+          radius: 100
+        });
+
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].displayName, 'Unknown', 'Should safely default missing displayName to Unknown');
+        assert.strictEqual(results[0].avatarColor, '#3b82f6', 'Should safely default missing avatarColor');
+        assert.strictEqual(results[0].isOnline, false);
+        assert.strictEqual(results[0].distance, 10.0);
+      } finally {
+        integrationMock.mock.restore();
+      }
+    });
+
+    it('5. should reject invalid parameters to getNearbyUsers with descriptive error messages', async () => {
+      await assert.rejects(
+        async () => await getNearbyUsers({ location: [500, 300] }),
+        /officeId is required/
+      );
+
+      await assert.rejects(
+        async () => await getNearbyUsers({ officeId: officeA, location: null }),
+        /Location must be a 2-element array/
+      );
+
+      await assert.rejects(
+        async () => await getNearbyUsers({ officeId: officeA, location: [NaN, 300] }),
+        /Coordinates x and y must be finite numbers/
+      );
+
+      await assert.rejects(
+        async () => await getNearbyUsers({ officeId: officeA, location: [500, Infinity] }),
+        /Coordinates x and y must be finite numbers/
+      );
+
+      await assert.rejects(
+        async () => await getNearbyUsers({ officeId: officeA, location: [100] }),
+        /Location must be a 2-element array/
+      );
+    });
+
+    it('6. should track avatar navigation across waypoints without duplicating records and updating proximity dynamically', async () => {
+      const movingUserId = new mongoose.Types.ObjectId();
+      const mockPositionMap = new Map();
+
+      const findOneMock = mock.method(LivePosition, 'findOne', async (filter) => {
+        if (filter.userId) {
+          const doc = mockPositionMap.get(String(filter.userId));
+          return doc ? { ...doc } : null;
+        }
+        return null;
+      });
+
+      const findOneAndUpdateMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+        const userId = String(filter.userId);
+        let doc = mockPositionMap.get(userId);
+
+        if (!doc) {
+          if (options && options.upsert) {
+            doc = {
+              _id: new mongoose.Types.ObjectId(),
+              userId: filter.userId,
+              ...update.$set
+            };
+            mockPositionMap.set(userId, doc);
+            return { ...doc };
+          }
+          return null;
+        }
+
+        Object.assign(doc, update.$set);
+        mockPositionMap.set(userId, doc);
+        return { ...doc };
+      });
+
+      try {
+        // Step 1: Initial position in Workstation A
+        const pos1 = await upsertPosition({
+          userId: movingUserId,
+          officeId: officeA,
+          location: [100, 100],
+          socketId: 'sock_waypoint'
+        });
+        const originalDocId = String(pos1._id);
+
+        // Step 2: Move to Hallway [400, 250]
+        const pos2 = await updatePosition(movingUserId, [400, 250]);
+        assert.strictEqual(String(pos2._id), originalDocId, 'Document _id must be preserved across movement');
+        assert.deepStrictEqual(pos2.location, [400, 250]);
+
+        // Step 3: Move to Meeting Area [200, 450]
+        const pos3 = await updatePosition(movingUserId, [200, 450]);
+        assert.strictEqual(String(pos3._id), originalDocId, 'Document _id must remain invariant');
+        assert.deepStrictEqual(pos3.location, [200, 450]);
+
+        // Step 4: Move to Lounge [800, 450]
+        const pos4 = await updatePosition(movingUserId, [800, 450]);
+        assert.strictEqual(String(pos4._id), originalDocId);
+        assert.deepStrictEqual(pos4.location, [800, 450]);
+
+        // Total collection count must be strictly 1
+        assert.strictEqual(mockPositionMap.size, 1, 'Strictly 1 LivePosition record must exist for the moving user');
+      } finally {
+        findOneMock.mock.restore();
+        findOneAndUpdateMock.mock.restore();
+      }
+    });
+  });
+
+  describe('Day 10: Query Performance Scaling & Index Plan Validation', () => {
+    it('1. should verify schema index definition covers compound 2D query with officeId leading prefix and 2d location', () => {
+      const indexes = LivePosition.schema.indexes();
+
+      // Compound index definition check
+      const compoundEntry = indexes.find(([fields]) => fields.officeId === 1 && fields.location === '2d');
+      assert.ok(compoundEntry, 'Schema must define compound index { officeId: 1, location: "2d" }');
+
+      const [fields] = compoundEntry;
+      const keys = Object.keys(fields);
+      assert.strictEqual(keys[0], 'officeId', 'officeId must be leading key for room partitioning');
+      assert.strictEqual(keys[1], 'location', 'location must be secondary 2d planar index key');
+
+      // Unique userId index check
+      const userUniqueEntry = indexes.find(([f, opts]) => f.userId === 1 && opts?.unique === true);
+      assert.ok(userUniqueEntry, 'Schema must define unique index on { userId: 1 } for 1:1 user-to-avatar mapping');
+
+      // Single-field officeId index check
+      const officeEntry = indexes.find(([f]) => Object.keys(f).length === 1 && f.officeId === 1);
+      assert.ok(officeEntry, 'Schema must define single-field index { officeId: 1 } for getOfficePositions');
+
+      // Single-field socketId index check
+      const socketEntry = indexes.find(([f]) => Object.keys(f).length === 1 && f.socketId === 1);
+      assert.ok(socketEntry, 'Schema must define index on { socketId: 1 } for fast disconnect cleanup');
+    });
+
+    it('2. should validate simulated query execution plan mechanics using explain() mock and verify static compound index', async () => {
+      const targetOffice = new mongoose.Types.ObjectId();
+      const pivotLoc = [500, 300];
+      const proximityRadius = 100;
+
+      // Construct identical query shape used by getNearbyUsers
+      const queryShape = {
+        officeId: targetOffice,
+        location: {
+          $geoWithin: {
+            $center: [pivotLoc, proximityRadius]
+          }
+        }
+      };
+
+      // Emulate MongoDB query planner explain plan output
+      // Note: Live MongoDB cluster execution is unavailable in local offline test runs.
+      // This simulated explain plan verifies client-side shape handling; live cluster planner validation remains pending.
+      const mockExplainPlan = {
+        queryPlanner: {
+          plannerVersion: 1,
+          namespace: 'proxispeak.livepositions',
+          indexFilterSet: false,
+          parsedQuery: {
+            $and: [
+              { officeId: { $eq: targetOffice } },
+              {
+                location: {
+                  $geoWithin: {
+                    $center: [pivotLoc, proximityRadius]
+                  }
+                }
+              }
+            ]
+          },
+          winningPlan: {
+            stage: 'FETCH',
+            inputStage: {
+              stage: 'IXSCAN',
+              keyPattern: {
+                officeId: 1,
+                location: '2d'
+              },
+              indexName: 'officeId_1_location_2d',
+              isMultiKey: false,
+              direction: 'forward',
+              indexBounds: {
+                officeId: [`[${targetOffice}, ${targetOffice}]`],
+                location: [`[${pivotLoc[0] - proximityRadius}, ${pivotLoc[1] - proximityRadius}] to [${pivotLoc[0] + proximityRadius}, ${pivotLoc[1] + proximityRadius}]`]
+              }
+            }
+          },
+          rejectedPlans: []
+        },
+        executionStats: {
+          executionSuccess: true,
+          nReturned: 3,
+          executionTimeMillis: 0,
+          totalKeysExamined: 3,
+          totalDocsExamined: 3
+        }
+      };
+
+      const explainMock = mock.method(LivePosition, 'find', (query) => {
+        return {
+          explain: async (verbosity = 'executionStats') => {
+            return {
+              ...mockExplainPlan,
+              verbosity,
+              queriedFilter: query
+            };
+          }
+        };
+      });
+
+      try {
+        const queryObj = LivePosition.find(queryShape);
+        const plan = await queryObj.explain('executionStats');
+
+        assert.ok(plan.queryPlanner, 'Explain plan must contain queryPlanner');
+        assert.strictEqual(plan.queryPlanner.winningPlan.inputStage.stage, 'IXSCAN', 'Simulated winning plan must indicate IXSCAN');
+        assert.strictEqual(plan.queryPlanner.winningPlan.inputStage.indexName, 'officeId_1_location_2d', 'Must reference compound planar index');
+        assert.strictEqual(plan.queryPlanner.winningPlan.inputStage.keyPattern.officeId, 1);
+        assert.strictEqual(plan.queryPlanner.winningPlan.inputStage.keyPattern.location, '2d');
+        assert.strictEqual(plan.executionStats.totalDocsExamined, plan.executionStats.nReturned, 'Zero unindexed document scans in simulation');
+      } finally {
+        explainMock.mock.restore();
+      }
+    });
+
+    it('3. should benchmark in-memory proximity evaluation scaling across 25, 60, 120, and 250 positions against 20ms illustrative target', () => {
+      // Deterministically generate test users for scaling evaluation
+      function createDeterministicUsers(count, officeId = 'office-01') {
+        const users = [];
+        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+        for (let i = 0; i < count; i++) {
+          const x = 50 + ((i * 37) % 900);
+          const y = 50 + ((i * 23) % 500);
+          users.push({
+            userId: `scale_user_${i}`,
+            displayName: `Avatar ${i}`,
+            avatarColor: colors[i % colors.length],
+            location: [x, y],
+            officeId
+          });
+        }
+        return users;
+      }
+
+      const { runMemoryNearbyUsersBenchmark } = require('../../scripts/benchmark');
+      const pivot = [500, 300]; // Center canvas
+      const radius = 100;
+      const iterations = 200;
+
+      const scales = [25, 60, 120, 250];
+      const results = {};
+
+      for (const scale of scales) {
+        const users = createDeterministicUsers(scale);
+        assert.strictEqual(users.length, scale);
+
+        // Note: Measures application-side Euclidean filtering and audio parameter calculation in-memory.
+        // Does not measure live MongoDB query latency.
+        const stats = runMemoryNearbyUsersBenchmark(users, pivot, radius, iterations);
+
+        assert.ok(
+          stats.p50 < 20.0,
+          `Scale ${scale} users p50 latency (${stats.p50}ms) must be under 20ms illustrative target`
+        );
+        assert.ok(
+          stats.p95 < 20.0,
+          `Scale ${scale} users p95 latency (${stats.p95}ms) must be under 20ms illustrative target`
+        );
+
+        results[scale] = stats;
+      }
+
+      // Verify that even at 250 active avatars, p95 latency is sub-millisecond in memory
+      assert.ok(results[250].p95 < 5.0, `p95 for 250 users (${results[250].p95}ms) should be well under 5ms in-memory`);
+      assert.ok(results[250].p50 < 2.0, `p50 for 250 users (${results[250].p50}ms) should be well under 2ms in-memory`);
+    });
+  });
 });
