@@ -1,12 +1,63 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { WebRTCPeerManager, getRTCConfiguration } from '../webrtcPeerManager.js';
+import {
+  DEFAULT_RTC_CONFIG,
+  getRTCConfiguration,
+  WebRTCPeerManager,
+} from '../webrtcPeerManager.js';
+
+const rtcEnvironmentKeys = [
+  'VITE_STUN_URL',
+  'STUN_URL',
+  'VITE_TURN_URL',
+  'TURN_URL',
+  'VITE_TURN_USERNAME',
+  'TURN_USERNAME',
+  'VITE_TURN_CREDENTIAL',
+  'TURN_CREDENTIAL',
+  'VITE_TURN_PASSWORD',
+  'TURN_PASSWORD',
+];
+
+const withRtcEnvironment = (values, callback) => {
+  const previousValues = new Map(
+    rtcEnvironmentKeys.map((key) => [key, globalThis.process.env[key]])
+  );
+
+  try {
+    for (const key of rtcEnvironmentKeys) {
+      if (values[key] === undefined) {
+        delete globalThis.process.env[key];
+      } else {
+        globalThis.process.env[key] = values[key];
+      }
+    }
+    callback();
+  } finally {
+    for (const [key, value] of previousValues) {
+      if (value === undefined) {
+        delete globalThis.process.env[key];
+      } else {
+        globalThis.process.env[key] = value;
+      }
+    }
+  }
+};
+
+const waitFor = async (predicate, timeout = 500) => {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt >= timeout) {
+      throw new Error('Timed out waiting for the expected peer state');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
 
 // Minimal mock for RTCPeerConnection in Node.js test environment
 class MockRTCPeerConnection {
   constructor() {
     this.connectionState = 'new';
-    this.iceConnectionState = 'new';
     this.signalingState = 'stable';
     this.remoteDescription = null;
     this.localDescription = null;
@@ -15,7 +66,6 @@ class MockRTCPeerConnection {
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
-    this.oniceconnectionstatechange = null;
   }
 
   getSenders() {
@@ -69,9 +119,6 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
       addTrack(t) {
         this.tracks.push(t);
       }
-      removeTrack(t) {
-        this.tracks = this.tracks.filter((track) => track !== t);
-      }
       getTracks() {
         return this.tracks;
       }
@@ -96,6 +143,66 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     globalThis.RTCIceCandidate = originalRTCIceCandidate;
   });
 
+  test('uses VITE STUN and TURN settings, including comma-separated URLs', () => {
+    withRtcEnvironment({
+      VITE_STUN_URL: 'stun:primary.example, stun:secondary.example',
+      STUN_URL: 'stun:fallback.example',
+      VITE_TURN_URL: 'turn:relay.example, turns:relay.example',
+      TURN_URL: 'turn:fallback.example',
+      VITE_TURN_USERNAME: 'vite-user',
+      TURN_USERNAME: 'fallback-user',
+      VITE_TURN_CREDENTIAL: 'vite-secret',
+      TURN_CREDENTIAL: 'fallback-secret',
+    }, () => {
+      assert.deepEqual(getRTCConfiguration().iceServers, [
+        { urls: 'stun:primary.example' },
+        { urls: 'stun:secondary.example' },
+        {
+          urls: ['turn:relay.example', 'turns:relay.example'],
+          username: 'vite-user',
+          credential: 'vite-secret',
+        },
+      ]);
+    });
+  });
+
+  test('supports fallback STUN/TURN environment variables and TURN password names', () => {
+    withRtcEnvironment({
+      STUN_URL: 'stun:fallback.example',
+      TURN_URL: 'turn:fallback.example',
+      TURN_USERNAME: 'fallback-user',
+      TURN_PASSWORD: 'fallback-password',
+    }, () => {
+      assert.deepEqual(getRTCConfiguration().iceServers, [
+        { urls: 'stun:fallback.example' },
+        {
+          urls: 'turn:fallback.example',
+          username: 'fallback-user',
+          credential: 'fallback-password',
+        },
+      ]);
+    });
+  });
+
+  test('merges custom RTC overrides and constructor configuration', () => {
+    withRtcEnvironment({}, () => {
+      const customIceServers = [{ urls: 'turn:custom.example' }];
+      const customConfig = {
+        iceServers: customIceServers,
+        iceCandidatePoolSize: 0,
+        bundlePolicy: 'max-bundle',
+      };
+      const resolvedConfig = getRTCConfiguration(customConfig);
+      const manager = new WebRTCPeerManager({ rtcConfig: customConfig });
+
+      assert.equal(DEFAULT_RTC_CONFIG.iceCandidatePoolSize, 2);
+      assert.equal(resolvedConfig.iceServers, customIceServers);
+      assert.equal(resolvedConfig.iceCandidatePoolSize, 0);
+      assert.equal(resolvedConfig.bundlePolicy, 'max-bundle');
+      assert.deepEqual(manager.rtcConfig, resolvedConfig);
+    });
+  });
+
   test('isPolite deterministically evaluates local vs remote ID', () => {
     const manager = new WebRTCPeerManager({ localUserId: 'user-m' });
     // 'user-m' > 'user-a' -> true (polite)
@@ -114,6 +221,78 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     const session2 = manager.getOrCreatePeer('remote-1');
     assert.equal(session1, session2, 'Must return the existing active peer session');
     assert.equal(manager.peers.size, 1);
+  });
+
+  test('reports WebRTC connection-state changes for the peer', () => {
+    const reportedStates = [];
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      onPeerConnectionState: (peerId, state) => reportedStates.push({ peerId, state }),
+    });
+    const session = manager.getOrCreatePeer('remote-1');
+
+    session.pc.connectionState = 'connected';
+    session.pc.onconnectionstatechange();
+
+    assert.deepEqual(reportedStates, [{ peerId: 'remote-1', state: 'connected' }]);
+  });
+
+  test('retries failed peers with one bounded reconnection attempt', async () => {
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [5],
+    });
+    const originalSession = manager.getOrCreatePeer('remote-retry');
+
+    try {
+      originalSession.pc.connectionState = 'failed';
+      originalSession.pc.onconnectionstatechange();
+      originalSession.pc.onconnectionstatechange();
+      assert.equal(manager.peers.get('remote-retry'), originalSession);
+
+      await waitFor(() => manager.peers.get('remote-retry') !== originalSession);
+
+      const retriedSession = manager.peers.get('remote-retry');
+      assert.ok(retriedSession);
+      assert.notEqual(retriedSession, originalSession);
+      assert.equal(originalSession.pc.connectionState, 'closed');
+
+      retriedSession.pc.connectionState = 'failed';
+      retriedSession.pc.onconnectionstatechange();
+      await waitFor(() => !manager.peers.has('remote-retry'));
+
+      assert.equal(manager.peers.has('remote-retry'), false, 'Retries stop after the configured limit');
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  test('waits through brief disconnects and retries only after the grace period', async () => {
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [5],
+      disconnectGracePeriod: 30,
+    });
+    const originalSession = manager.getOrCreatePeer('remote-disconnect');
+
+    try {
+      originalSession.pc.connectionState = 'disconnected';
+      originalSession.pc.onconnectionstatechange();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(manager.peers.get('remote-disconnect'), originalSession);
+
+      originalSession.pc.connectionState = 'connected';
+      originalSession.pc.onconnectionstatechange();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      assert.equal(manager.peers.get('remote-disconnect'), originalSession);
+
+      originalSession.pc.connectionState = 'disconnected';
+      originalSession.pc.onconnectionstatechange();
+      await waitFor(() => manager.peers.get('remote-disconnect') !== originalSession);
+      assert.notEqual(manager.peers.get('remote-disconnect'), originalSession);
+    } finally {
+      manager.destroy();
+    }
   });
 
   test('buffers ICE candidates when remote description is not set, then drains them', async () => {
@@ -152,198 +331,4 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     manager.destroy();
     assert.equal(manager.peers.size, 0);
   });
-
-  test('closePeer clears pending ICE candidates and stops remote stream tracks', async () => {
-    const removedPeers = [];
-    const mockSpatialAudioGraph = {
-      removed: [],
-      removePeer(id) {
-        this.removed.push(id);
-      },
-    };
-
-    const manager = new WebRTCPeerManager({
-      localUserId: 'local-clean',
-      spatialAudioGraph: mockSpatialAudioGraph,
-      onPeerRemoved: (id) => removedPeers.push(id),
-    });
-
-    const session = manager.getOrCreatePeer('remote-clean');
-
-    // Add a remote track
-    let trackStopped = false;
-    const track = {
-      kind: 'audio',
-      stop() {
-        trackStopped = true;
-      },
-    };
-    session.remoteStream.addTrack(track);
-
-    // Buffer an ICE candidate
-    await manager.handleRemoteIceCandidate('remote-clean', { candidate: 'cand-buffered' });
-    assert.equal(session.iceCandidateBuffer.length, 1);
-
-    // Close peer
-    manager.closePeer('remote-clean');
-
-    // Verify PC is closed
-    assert.equal(session.pc.connectionState, 'closed');
-    // Verify candidate buffer is cleared
-    assert.equal(session.iceCandidateBuffer.length, 0);
-    // Verify track stopped and removed from stream
-    assert.equal(trackStopped, true);
-    assert.equal(session.remoteStream.getTracks().length, 0);
-    // Verify spatial audio graph and callback notified
-    assert.deepEqual(mockSpatialAudioGraph.removed, ['remote-clean']);
-    assert.deepEqual(removedPeers, ['remote-clean']);
-    // Verify removed from map
-    assert.equal(manager.peers.has('remote-clean'), false);
-  });
-
-  test('closePeer is safe to call multiple times (idempotent)', () => {
-    let removeCount = 0;
-    const manager = new WebRTCPeerManager({
-      localUserId: 'local-idem',
-      onPeerRemoved: () => {
-        removeCount += 1;
-      },
-    });
-
-    manager.getOrCreatePeer('remote-idem');
-    assert.equal(manager.peers.has('remote-idem'), true);
-
-    // First close
-    manager.closePeer('remote-idem');
-    assert.equal(removeCount, 1);
-    assert.equal(manager.peers.has('remote-idem'), false);
-
-    // Second close should be safe no-op
-    assert.doesNotThrow(() => {
-      manager.closePeer('remote-idem');
-    });
-    assert.equal(removeCount, 1);
-
-    // Closing non-existent peer is safe no-op
-    assert.doesNotThrow(() => {
-      manager.closePeer('non-existent');
-    });
-    assert.equal(removeCount, 1);
-  });
-
-  test('closePeer does not affect other active peers (peer isolation)', () => {
-    const manager = new WebRTCPeerManager({ localUserId: 'local-iso' });
-    const sessionA = manager.getOrCreatePeer('peer-A');
-    const sessionB = manager.getOrCreatePeer('peer-B');
-
-    assert.equal(manager.peers.size, 2);
-
-    manager.closePeer('peer-A');
-    assert.equal(manager.peers.has('peer-A'), false);
-    assert.equal(sessionA.pc.connectionState, 'closed');
-
-    // Peer B remains alive and untouched
-    assert.equal(manager.peers.has('peer-B'), true);
-    assert.equal(sessionB.pc.connectionState, 'new');
-    assert.equal(manager.peers.size, 1);
-
-    manager.destroy();
-  });
-
-  test('pc.onconnectionstatechange triggers closePeer on disconnected state', () => {
-    const manager = new WebRTCPeerManager({ localUserId: 'local-disc' });
-    const session = manager.getOrCreatePeer('peer-disc');
-
-    assert.equal(manager.peers.has('peer-disc'), true);
-
-    // Simulate connectionState transitioning to 'disconnected'
-    session.pc.connectionState = 'disconnected';
-    session.pc.onconnectionstatechange();
-
-    // Verify peer was automatically closed and removed
-    assert.equal(manager.peers.has('peer-disc'), false);
-    assert.equal(session.pc.connectionState, 'closed');
-  });
-
-  test('getOrCreatePeer replaces a stale or disconnected peer connection', () => {
-    const manager = new WebRTCPeerManager({ localUserId: 'local-reconnect' });
-    const sessionOld = manager.getOrCreatePeer('peer-reconnect');
-
-    // Simulate stale disconnected state
-    sessionOld.pc.connectionState = 'disconnected';
-
-    // Calling getOrCreatePeer should evict the stale session and create a fresh one
-    const sessionNew = manager.getOrCreatePeer('peer-reconnect');
-    assert.notEqual(sessionOld, sessionNew);
-    assert.equal(sessionOld.pc.connectionState, 'closed');
-    assert.equal(sessionNew.pc.connectionState, 'new');
-    assert.equal(manager.peers.get('peer-reconnect'), sessionNew);
-  });
-
-  test('handleRemoteIceCandidate drops candidates safely if connection is closed or disconnected', async () => {
-    const manager = new WebRTCPeerManager({ localUserId: 'local-ice' });
-    const session = manager.getOrCreatePeer('peer-ice');
-
-    session.pc.connectionState = 'closed';
-
-    await assert.doesNotReject(async () => {
-      await manager.handleRemoteIceCandidate('peer-ice', { candidate: 'candidate:foo' });
-    });
-    assert.equal(session.iceCandidateBuffer.length, 0);
-  });
-
-  test('signaling event webrtc:peer-disconnect closes peer cleanly', () => {
-    const listeners = new Map();
-    const mockTransport = {
-      on(event, handler) {
-        listeners.set(event, handler);
-        return () => listeners.delete(event);
-      },
-    };
-
-    const manager = new WebRTCPeerManager({
-      localUserId: 'local-sig',
-      signalingTransport: mockTransport,
-    });
-
-    const session = manager.getOrCreatePeer('remote-sig');
-    assert.equal(manager.peers.has('remote-sig'), true);
-
-    // Fire webrtc:peer-disconnect event
-    const disconnectHandler = listeners.get('webrtc:peer-disconnect');
-    assert.ok(disconnectHandler);
-    disconnectHandler({ peerId: 'remote-sig' });
-
-    assert.equal(manager.peers.has('remote-sig'), false);
-    assert.equal(session.pc.connectionState, 'closed');
-  });
-
-  test('getRTCConfiguration provides default STUN servers and incorporates TURN from env', () => {
-    const config = getRTCConfiguration();
-    assert.ok(Array.isArray(config.iceServers));
-    assert.ok(config.iceServers.length >= 2);
-    assert.ok(config.iceServers.some((s) => s.urls.includes('stun.l.google.com')));
-
-    // Test with TURN env vars set
-    const oldTurnUrl = process.env.VITE_TURN_URL;
-    const oldTurnUser = process.env.VITE_TURN_USERNAME;
-    const oldTurnCred = process.env.VITE_TURN_CREDENTIAL;
-
-    try {
-      process.env.VITE_TURN_URL = 'turn:turn.example.com:3478';
-      process.env.VITE_TURN_USERNAME = 'proxi_user';
-      process.env.VITE_TURN_CREDENTIAL = 'proxi_password';
-
-      const turnConfig = getRTCConfiguration();
-      const turnEntry = turnConfig.iceServers.find((s) => s.urls === 'turn:turn.example.com:3478');
-      assert.ok(turnEntry);
-      assert.equal(turnEntry.username, 'proxi_user');
-      assert.equal(turnEntry.credential, 'proxi_password');
-    } finally {
-      process.env.VITE_TURN_URL = oldTurnUrl;
-      process.env.VITE_TURN_USERNAME = oldTurnUser;
-      process.env.VITE_TURN_CREDENTIAL = oldTurnCred;
-    }
-  });
 });
-

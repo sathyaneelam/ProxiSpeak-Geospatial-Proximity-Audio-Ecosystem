@@ -53,7 +53,6 @@ export class BaseSignalingTransport {
   sendOffer() {}
   sendAnswer() {}
   sendIceCandidate() {}
-  sendPeerDisconnect() {}
   updatePosition() {}
   leaveVoice() {}
 }
@@ -75,11 +74,13 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
     this.socket = null;
     this.userId = null;
     this.officeId = null;
+    this.position = null;
   }
 
   async connect({ userId, officeId, position }) {
     this.userId = userId;
     this.officeId = officeId;
+    this.position = position;
 
     if (!this.socket) {
       this.socket = io(this.serverUrl, this.options);
@@ -88,21 +89,17 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
 
     if (!this.socket.connected) {
       this.socket.connect();
+    } else {
+      this._joinVoiceRoom();
     }
+  }
 
+  _joinVoiceRoom() {
+    if (!this.socket?.connected) return;
     this.socket.emit(SIGNALING_EVENTS.VOICE_JOIN, {
-      userId,
-      officeId,
-      position,
-    });
-
-    // Also emit office:join for Member 2 backend presence registration
-    this.socket.emit('office:join', {
-      officeId: officeId || 'default-office',
-      userId,
-      displayName: userId,
-      x: position?.x ?? 0,
-      y: position?.y ?? 0,
+      userId: this.userId,
+      officeId: this.officeId,
+      position: this.position,
     });
   }
 
@@ -110,6 +107,7 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
     if (!this.socket) return;
 
     this.socket.on('connect', () => {
+      this._joinVoiceRoom();
       this.emitLocal('connected', { socketId: this.socket.id });
     });
 
@@ -121,105 +119,32 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       this.emitLocal('error', { error: err });
     });
 
-    // WebRTC Signaling Events (handles both Member 4 sdp and Member 2 offer/answer/relay)
+    // WebRTC Signaling Events
     this.socket.on(SIGNALING_EVENTS.WEBRTC_OFFER, (data) => {
-      if (isValidSdpPayload(data)) {
-        const isTarget =
-          !data.toUserId ||
-          data.toUserId === this.userId ||
-          data.to === this.userId ||
-          data.to === this.socket?.id;
-
-        if (isTarget) {
-          const sdp = data.offer || data.sdp;
-          const fromUserId = data.fromUserId || data.from;
-          this.emitLocal(SIGNALING_EVENTS.WEBRTC_OFFER, {
-            ...data,
-            fromUserId,
-            sdp,
-          });
-        }
+      if (isValidSdpPayload(data) && data.toUserId === this.userId) {
+        this.emitLocal(SIGNALING_EVENTS.WEBRTC_OFFER, data);
       }
     });
 
     this.socket.on(SIGNALING_EVENTS.WEBRTC_ANSWER, (data) => {
-      if (isValidSdpPayload(data)) {
-        const isTarget =
-          !data.toUserId ||
-          data.toUserId === this.userId ||
-          data.to === this.userId ||
-          data.to === this.socket?.id;
-
-        if (isTarget) {
-          const sdp = data.answer || data.sdp;
-          const fromUserId = data.fromUserId || data.from;
-          this.emitLocal(SIGNALING_EVENTS.WEBRTC_ANSWER, {
-            ...data,
-            fromUserId,
-            sdp,
-          });
-        }
+      if (isValidSdpPayload(data) && data.toUserId === this.userId) {
+        this.emitLocal(SIGNALING_EVENTS.WEBRTC_ANSWER, data);
       }
     });
 
     this.socket.on(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, (data) => {
-      if (isValidIceCandidatePayload(data)) {
-        const isTarget =
-          !data.toUserId ||
-          data.toUserId === this.userId ||
-          data.to === this.userId ||
-          data.to === this.socket?.id;
-
-        if (isTarget) {
-          const fromUserId = data.fromUserId || data.from;
-          this.emitLocal(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, {
-            ...data,
-            fromUserId,
-          });
-        }
+      if (isValidIceCandidatePayload(data) && data.toUserId === this.userId) {
+        this.emitLocal(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, data);
       }
     });
 
-    this.socket.on(SIGNALING_EVENTS.WEBRTC_DISCONNECT, (data) => {
-      this.emitLocal(SIGNALING_EVENTS.WEBRTC_DISCONNECT, data);
-    });
-
-    // Member 2 Server error event
-    this.socket.on(SIGNALING_EVENTS.WEBRTC_ERROR, (err) => {
-      this.emitLocal(SIGNALING_EVENTS.WEBRTC_ERROR, err);
-      this.emitLocal('error', { error: err });
-    });
-
-    // Voice room presence (supports Member 4 voice:* and Member 2 user:* & proximity:*)
+    // Voice room presence
     this.socket.on(SIGNALING_EVENTS.VOICE_USER_JOINED, (data) => {
       this.emitLocal(SIGNALING_EVENTS.VOICE_USER_JOINED, data);
     });
 
     this.socket.on(SIGNALING_EVENTS.VOICE_USER_LEFT, (data) => {
       this.emitLocal(SIGNALING_EVENTS.VOICE_USER_LEFT, data);
-    });
-
-    this.socket.on('user:joined', (data) => {
-      this.emitLocal(SIGNALING_EVENTS.VOICE_USER_JOINED, {
-        userId: data.userId || data.socketId,
-        socketId: data.socketId,
-        position: { x: data.x, y: data.y },
-      });
-    });
-
-    this.socket.on('user:left', (data) => {
-      this.emitLocal(SIGNALING_EVENTS.VOICE_USER_LEFT, {
-        userId: data.userId || data.socketId,
-        socketId: data.socketId,
-      });
-    });
-
-    this.socket.on('proximity:enter', (data) => {
-      this.emitLocal('proximity:enter', data);
-    });
-
-    this.socket.on('proximity:leave', (data) => {
-      this.emitLocal('proximity:leave', data);
     });
 
     this.socket.on(SIGNALING_EVENTS.PROXIMITY_UPDATE, (data) => {
@@ -260,30 +185,13 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
     this.socket.emit(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, payload);
   }
 
-  sendPeerDisconnect({ toUserId }) {
-    if (!this.socket?.connected) return;
-    this.socket.emit(SIGNALING_EVENTS.WEBRTC_DISCONNECT, {
-      fromUserId: this.userId,
-      toUserId,
-      officeId: this.officeId,
-      timestamp: Date.now(),
-    });
-  }
-
   updatePosition(position) {
+    this.position = position;
     if (!this.socket?.connected) return;
     this.socket.emit(SIGNALING_EVENTS.PROXIMITY_UPDATE, {
       userId: this.userId,
       officeId: this.officeId,
       position,
-    });
-
-    // Also emit avatar:move for Member 2 proximity evaluations
-    this.socket.emit('avatar:move', {
-      x: position?.x ?? 0,
-      y: position?.y ?? 0,
-      officeId: this.officeId,
-      userId: this.userId,
     });
   }
 
@@ -293,7 +201,6 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
         userId: this.userId,
         officeId: this.officeId,
       });
-      this.socket.emit('office:leave');
     }
   }
 
@@ -383,15 +290,6 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       candidate,
     });
     this._broadcast(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, payload);
-  }
-
-  sendPeerDisconnect({ toUserId }) {
-    this._broadcast(SIGNALING_EVENTS.WEBRTC_DISCONNECT, {
-      fromUserId: this.userId,
-      toUserId,
-      officeId: this.officeId,
-      timestamp: Date.now(),
-    });
   }
 
   updatePosition(position) {

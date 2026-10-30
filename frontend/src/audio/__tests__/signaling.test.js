@@ -9,7 +9,7 @@ import {
   createAnswerPayload,
   createIceCandidatePayload,
 } from '../signalingContract.js';
-import { BaseSignalingTransport } from '../signalingAdapter.js';
+import { BaseSignalingTransport, SocketIOSignalingTransport } from '../signalingAdapter.js';
 
 describe('Signaling Contract & Adapter - Event Payloads and Validation', () => {
   test('isValidPosition properly checks 2D coordinate objects', () => {
@@ -95,5 +95,48 @@ describe('Signaling Contract & Adapter - Event Payloads and Validation', () => {
     unsubscribe();
     transport.emitLocal('test-event', { foo: 'bar' });
     assert.equal(callCount, 1); // Not called again after unsubscribing
+  });
+
+  test('Socket.IO transport rejoins the voice room after reconnecting', () => {
+    const transport = new SocketIOSignalingTransport();
+    const socketHandlers = new Map();
+    const emittedEvents = [];
+    transport.socket = {
+      connected: true,
+      id: 'socket-1',
+      on(event, handler) {
+        socketHandlers.set(event, handler);
+      },
+      emit(event, payload) {
+        emittedEvents.push({ event, payload });
+      },
+    };
+    transport.userId = 'user-1';
+    transport.officeId = 'office-1';
+    transport.position = { x: 10, y: 20 };
+
+    transport._bindSocketEvents();
+    socketHandlers.get('connect')();
+    transport.socket.connected = false;
+    transport.updatePosition({ x: 30, y: 40 });
+    transport.socket.connected = true;
+    socketHandlers.get('connect')();
+
+    assert.deepEqual(emittedEvents[0], {
+      event: SIGNALING_EVENTS.VOICE_JOIN,
+      payload: {
+        userId: 'user-1',
+        officeId: 'office-1',
+        position: { x: 10, y: 20 },
+      },
+    });
+    assert.deepEqual(emittedEvents[1], {
+      event: SIGNALING_EVENTS.VOICE_JOIN,
+      payload: {
+        userId: 'user-1',
+        officeId: 'office-1',
+        position: { x: 30, y: 40 },
+      },
+    });
   });
 });
