@@ -183,7 +183,6 @@ describe("REST API Integration Tests", () => {
       );
 
       assert.strictEqual(res.status, 200);
-
       const data = await res.json();
       assert.strictEqual(data.status, "success");
       assert.strictEqual(data.data.x, 25);
@@ -200,4 +199,36 @@ describe("REST API Integration Tests", () => {
       }
     }
   });
+
+  it("GET /api/positions/:userId should return 404 when position does not exist", async () => {
+    const User = require("../src/models/User");
+    const Position = require("../src/models/Position");
+
+    let user;
+
+    try {
+      user = await User.create({
+        displayName: "No Position Test User",
+      });
+
+      const res = await fetch(
+        `${baseUrl}/api/positions/${user._id.toString()}`
+      );
+
+      assert.strictEqual(res.status, 404);
+
+      const data = await res.json();
+      assert.strictEqual(data.status, "error");
+      assert.strictEqual(
+        data.message,
+        "Position not found for user"
+      );
+    } finally {
+      if (user) {
+        await Position.deleteOne({ userId: user._id });
+        await User.deleteOne({ _id: user._id });
+      }
+    }
+  });
+
 });
