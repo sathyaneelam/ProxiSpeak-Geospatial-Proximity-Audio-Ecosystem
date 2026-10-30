@@ -384,6 +384,36 @@ Proximity evaluation latency (Euclidean filtering and smoothstep audio enrichmen
 
 *Key Takeaway:* In-memory spatial proximity filtering and smoothstep audio parameter calculations complete in under $1\text{ms}$ ($p_{95} \approx 0.78\text{ms}$) even at 250 concurrent avatars on a single canvas, comfortably meeting the $20\text{ms}$ illustrative real-time audio processing target.
 
+### 3.8 Avatar Movement-to-Database Persistence & Resilience Integration (Day 11)
+
+To ensure high-frequency avatar movements do not overwhelm the database or compromise persistence integrity, `src/services/positionService.js` implements a robust movement-to-database persistence contract:
+
+#### 1. Consecutive Trajectory Persistence & Document Invariance
+- Avatar movement streams sequentially update the single existing `LivePosition` record in-place via `{ userId }` filtering on `findOneAndUpdate`.
+- Document `_id` remains strictly invariant across continuous multi-waypoint navigation, preventing duplicate or orphaned position documents.
+- Only the latest coordinates $[x, y]$ and timestamp `lastUpdated` are persisted in MongoDB.
+
+#### 2. Redundant Write Suppression Mechanics
+- Redundant MongoDB write operations are avoided when movement packets carry unchanged coordinates:
+  - If `isSameLocation && isSameOffice && isSameSocket`, `updatePosition` returns the existing document immediately without issuing a `findOneAndUpdate` write.
+  - Reduces database IOPS and replica oplog write load during idle periods.
+
+#### 3. Office & Socket Relationship Integrity
+- **Intra-Office Movement:** Default updates (`updatePosition(userId, [x, y])`) preserve the existing `officeId` and `socketId` associations.
+- **Client Reconnection:** Reconnection updates (`{ socketId: newSocketId }`) update the client socket mapping while preserving office room partitioning.
+- **Cross-Office Transfers:** Dynamic room transfers (`{ officeId: newOfficeId }`) update the room partition atomically in-place, instantly updating room queries (`getOfficePositions`).
+
+#### 4. Pre-Database Coordinate Validation Safeguards
+- Pre-validates coordinates before database queries:
+  - Rejects negative coordinates ($x < 0$ or $y < 0$) with descriptive planar error messages.
+  - Rejects non-numeric, `NaN`, `Infinity`, `-Infinity`, and malformed coordinate arrays.
+  - Falsy or invalid updates fail fast and preserve existing database documents without corruption.
+
+#### 5. Resilience & Race-Condition Recovery
+- **E11000 Duplicate Key Recovery:** If a concurrent insert race condition occurs on unique index `{ userId: 1 }` during initial upsert, `upsertPosition` catches error code `11000` and transparently recovers by updating the existing document.
+- **Mid-Update Deletion Recovery:** If a position record is removed (e.g. temporary disconnect) between `findOne` and `findOneAndUpdate`, `updatePosition` detects `!updated` and safely recreates the document using the fallback `officeId`.
+- **Database Failure Transparency:** Unrecoverable database errors (e.g. network disconnects, write timeouts) surface cleanly to the caller without corrupting in-memory state.
+
 ---
 
 ## 4. Backend Service Contracts & Socket.io Integration

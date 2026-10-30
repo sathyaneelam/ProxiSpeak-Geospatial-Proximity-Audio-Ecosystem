@@ -148,6 +148,9 @@ async function upsertPosition({ userId, officeId, location, socketId = null }) {
   if (!userId) throw new Error('userId is required for position upsert');
   if (!officeId) throw new Error('officeId is required for position upsert');
   const validLocation = validateCoordinates(location);
+  if (validLocation[0] < 0 || validLocation[1] < 0) {
+    throw new Error(`Coordinates must be non-negative planar canvas pixels: received [${validLocation[0]}, ${validLocation[1]}]`);
+  }
 
   // Check if position already exists for this user to avoid redundant writes and preserve unique record
   const existing = await LivePosition.findOne({ userId });
@@ -205,7 +208,19 @@ async function upsertPosition({ userId, officeId, location, socketId = null }) {
     setDefaultsOnInsert: true
   };
 
-  return await LivePosition.findOneAndUpdate(filter, update, options);
+  try {
+    return await LivePosition.findOneAndUpdate(filter, update, options);
+  } catch (err) {
+    if (err && err.code === 11000) {
+      // Race condition recovery: another concurrent insert completed first.
+      // Update the existing record to maintain 1:1 invariant and avoid unhandled failure.
+      return await LivePosition.findOneAndUpdate({ userId }, update, {
+        new: true,
+        runValidators: true
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -223,6 +238,9 @@ async function upsertPosition({ userId, officeId, location, socketId = null }) {
 async function updatePosition(userId, location, options = {}) {
   if (!userId) throw new Error('userId is required');
   const validLocation = validateCoordinates(location);
+  if (validLocation[0] < 0 || validLocation[1] < 0) {
+    throw new Error(`Coordinates must be non-negative planar canvas pixels: received [${validLocation[0]}, ${validLocation[1]}]`);
+  }
 
   let targetOfficeId = null;
   let targetSocketId = undefined;
@@ -294,11 +312,27 @@ async function updatePosition(userId, location, options = {}) {
     updateFields.socketId = targetSocketId;
   }
 
-  return await LivePosition.findOneAndUpdate(
+  const updated = await LivePosition.findOneAndUpdate(
     { userId },
     { $set: updateFields },
     { new: true, runValidators: true }
   );
+
+  if (!updated) {
+    // If the record was removed between findOne and findOneAndUpdate, recreate with fallback office
+    const fallbackOfficeId = targetOfficeId || existing.officeId;
+    if (fallbackOfficeId) {
+      return await upsertPosition({
+        userId,
+        officeId: fallbackOfficeId,
+        location: validLocation,
+        socketId: targetSocketId !== undefined ? targetSocketId : existing.socketId
+      });
+    }
+    return null;
+  }
+
+  return updated;
 }
 
 /**

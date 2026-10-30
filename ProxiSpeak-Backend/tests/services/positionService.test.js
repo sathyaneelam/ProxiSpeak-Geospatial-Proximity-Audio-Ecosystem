@@ -2175,4 +2175,509 @@ describe('Position Service & Contract Validation', () => {
       assert.ok(results[250].p50 < 2.0, `p50 for 250 users (${results[250].p50}ms) should be well under 2ms in-memory`);
     });
   });
+
+  describe('Day 11: Movement-to-Database Persistence Integration & Resilience', () => {
+    const day11Office1 = new mongoose.Types.ObjectId();
+    const day11Office2 = new mongoose.Types.ObjectId();
+    const day11UserA = new mongoose.Types.ObjectId();
+    const day11UserB = new mongoose.Types.ObjectId();
+
+    let day11PositionStore;
+    let day11UserStore;
+    let day11WriteCount;
+    let day11FindOneMock;
+    let day11FindOneAndUpdateMock;
+    let day11FindByIdMock;
+    let day11FindMock;
+
+    function setupDay11Mocks() {
+      day11PositionStore = new Map();
+      day11UserStore = new Map();
+      day11WriteCount = 0;
+
+      day11FindOneMock = mock.method(LivePosition, 'findOne', async (filter) => {
+        if (filter.userId) {
+          const doc = day11PositionStore.get(String(filter.userId));
+          return doc ? { ...doc } : null;
+        }
+        if (filter.socketId) {
+          for (const doc of day11PositionStore.values()) {
+            if (doc.socketId === filter.socketId) return { ...doc };
+          }
+        }
+        return null;
+      });
+
+      day11FindOneAndUpdateMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+        day11WriteCount++;
+        const userId = String(filter.userId);
+        let doc = day11PositionStore.get(userId);
+
+        if (!doc) {
+          if (options && options.upsert) {
+            doc = {
+              _id: new mongoose.Types.ObjectId(),
+              userId: filter.userId,
+              createdAt: new Date(),
+              lastUpdated: new Date(),
+              ...update.$set
+            };
+            day11PositionStore.set(userId, doc);
+            return { ...doc };
+          }
+          return null;
+        }
+
+        Object.assign(doc, update.$set);
+        day11PositionStore.set(userId, doc);
+        return { ...doc };
+      });
+
+      day11FindByIdMock = mock.method(User, 'findById', (id) => {
+        return {
+          lean: async () => {
+            return day11UserStore.get(String(id)) || null;
+          }
+        };
+      });
+
+      day11FindMock = mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              const results = [];
+              for (const doc of day11PositionStore.values()) {
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  continue;
+                }
+                const user = day11UserStore.get(String(doc.userId)) || {
+                  _id: doc.userId,
+                  displayName: 'Test User'
+                };
+                results.push({
+                  ...doc,
+                  userId: user
+                });
+              }
+              return results;
+            }
+          })
+        };
+      });
+    }
+
+    function restoreDay11Mocks() {
+      if (day11FindOneMock) day11FindOneMock.mock.restore();
+      if (day11FindOneAndUpdateMock) day11FindOneAndUpdateMock.mock.restore();
+      if (day11FindByIdMock) day11FindByIdMock.mock.restore();
+      if (day11FindMock) day11FindMock.mock.restore();
+    }
+
+    it('1. should persist sequential movement updates across a continuous trajectory and retain only the latest coordinates', async () => {
+      setupDay11Mocks();
+      try {
+        const initialDoc = await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [50, 50],
+          socketId: 'sock_traj_01'
+        });
+        const docId = String(initialDoc._id);
+
+        const trajectory = [
+          [75, 60],
+          [110, 95],
+          [180, 160],
+          [290, 220],
+          [430, 310],
+          [600, 400]
+        ];
+
+        for (const waypoint of trajectory) {
+          const updated = await updatePosition(day11UserA, waypoint);
+          assert.ok(updated, 'Should return updated document for each waypoint');
+          assert.strictEqual(String(updated._id), docId, 'Document _id must remain invariant across movement');
+          assert.deepStrictEqual(updated.location, waypoint, 'Location must match current waypoint');
+          assert.ok(updated.lastUpdated instanceof Date);
+        }
+
+        const storedDoc = await getUserPosition(day11UserA);
+        assert.ok(storedDoc);
+        assert.deepStrictEqual(storedDoc.location, [600, 400], 'Stored position must reflect only the latest coordinates');
+        assert.strictEqual(String(storedDoc._id), docId);
+        assert.strictEqual(day11PositionStore.size, 1, 'Strictly 1 LivePosition document must exist for the user');
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('2. should maintain userId invariance and officeId association during intra-office movement', async () => {
+      setupDay11Mocks();
+      try {
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [100, 100],
+          socketId: 'sock_user_a'
+        });
+
+        // Move within office without specifying options
+        const move1 = await updatePosition(day11UserA, [200, 300]);
+        assert.strictEqual(String(move1.officeId), String(day11Office1), 'Office association must be preserved');
+        assert.strictEqual(move1.socketId, 'sock_user_a', 'Socket ID must be preserved during normal move');
+
+        // Move with client reconnection / socket change
+        const move2 = await updatePosition(day11UserA, [250, 350], { socketId: 'sock_user_a_reconnected' });
+        assert.strictEqual(move2.socketId, 'sock_user_a_reconnected', 'Socket ID must update on reconnection');
+        assert.strictEqual(String(move2.officeId), String(day11Office1), 'Office association must still be preserved');
+
+        const officePositions = await getOfficePositions(day11Office1);
+        assert.strictEqual(officePositions.length, 1);
+        assert.deepStrictEqual(officePositions[0].location, [250, 350]);
+        assert.strictEqual(day11PositionStore.size, 1);
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('3. should update officeId atomically during cross-office transfer and immediately reflect in office queries', async () => {
+      setupDay11Mocks();
+      try {
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [250, 250],
+          socketId: 'sock_xfer'
+        });
+
+        day11UserStore.set(String(day11UserA), {
+          _id: day11UserA,
+          displayName: 'Avatar User A'
+        });
+
+        // Verify initial presence in office 1
+        const office1Before = await getOfficePositions(day11Office1);
+        assert.strictEqual(office1Before.length, 1);
+
+        // Transfer to office 2
+        const transferred = await updatePosition(day11UserA, [700, 500], { officeId: day11Office2 });
+        assert.strictEqual(String(transferred.officeId), String(day11Office2));
+        assert.deepStrictEqual(transferred.location, [700, 500]);
+
+        // Query office 1 - must be empty
+        const office1After = await getOfficePositions(day11Office1);
+        assert.strictEqual(office1After.length, 0, 'User must be absent from previous office');
+
+        // Query office 2 - must contain user
+        const office2After = await getOfficePositions(day11Office2);
+        assert.strictEqual(office2After.length, 1, 'User must be present in destination office');
+        assert.deepStrictEqual(office2After[0].location, [700, 500]);
+        assert.strictEqual(day11PositionStore.size, 1);
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('4. should ensure strictly one LivePosition record per user across interleaved upserts, movements, and multi-user actions', async () => {
+      setupDay11Mocks();
+      try {
+        const docA = await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [100, 100],
+          socketId: 'sock_a'
+        });
+        const docB = await upsertPosition({
+          userId: day11UserB,
+          officeId: day11Office1,
+          location: [200, 200],
+          socketId: 'sock_b'
+        });
+
+        const idA = String(docA._id);
+        const idB = String(docB._id);
+
+        // Interleaved updates
+        await updatePosition(day11UserA, [120, 120]);
+        await updatePosition(day11UserB, [300, 300]);
+        // Client A re-upserts (e.g. connection refresh)
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [140, 140],
+          socketId: 'sock_a_refreshed'
+        });
+        await updatePosition(day11UserB, [320, 320]);
+        await updatePosition(day11UserA, [160, 160]);
+
+        assert.strictEqual(day11PositionStore.size, 2, 'Total LivePosition collection size must be strictly 2');
+
+        const finalA = await getUserPosition(day11UserA);
+        const finalB = await getUserPosition(day11UserB);
+
+        assert.strictEqual(String(finalA._id), idA, 'User A _id must be invariant across all operations');
+        assert.strictEqual(String(finalB._id), idB, 'User B _id must be invariant across all operations');
+        assert.deepStrictEqual(finalA.location, [160, 160]);
+        assert.deepStrictEqual(finalB.location, [320, 320]);
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('5. should reject invalid movement data (negative coordinates, non-numeric, malformed) before write and prevent database corruption', async () => {
+      setupDay11Mocks();
+      try {
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [300, 200],
+          socketId: 'sock_clean'
+        });
+
+        // Negative coordinates
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [-5, 200]),
+          /Coordinates must be non-negative planar canvas pixels/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [300, -10]),
+          /Coordinates must be non-negative planar canvas pixels/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [-50, -50]),
+          /Coordinates must be non-negative planar canvas pixels/
+        );
+
+        // Non-numeric and non-finite
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [NaN, 200]),
+          /Coordinates x and y must be finite numbers/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [300, Infinity]),
+          /Coordinates x and y must be finite numbers/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [-Infinity, 200]),
+          /Coordinates x and y must be finite numbers/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, ['300', 200]),
+          /Coordinates x and y must be finite numbers/
+        );
+
+        // Malformed arrays and null
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [300]),
+          /Location must be a 2-element array/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, [300, 200, 100]),
+          /Location must be a 2-element array/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, []),
+          /Location must be a 2-element array/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day11UserA, null),
+          /Location must be a 2-element array/
+        );
+
+        // Missing or falsy userId
+        await assert.rejects(
+          async () => await updatePosition(null, [350, 250]),
+          /userId is required/
+        );
+        await assert.rejects(
+          async () => await updatePosition('', [350, 250]),
+          /userId is required/
+        );
+
+        // Verify stored document remains completely uncorrupted
+        const stored = await getUserPosition(day11UserA);
+        assert.deepStrictEqual(stored.location, [300, 200], 'Original coordinates must remain intact');
+        assert.strictEqual(stored.socketId, 'sock_clean');
+        assert.strictEqual(day11PositionStore.size, 1);
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('6. should avoid unnecessary MongoDB writes when position update is identical to current state', async () => {
+      setupDay11Mocks();
+      try {
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [450, 250],
+          socketId: 'sock_idle'
+        });
+
+        day11WriteCount = 0; // Reset counter
+
+        // Repeated update with identical coordinates
+        for (let i = 0; i < 4; i++) {
+          const res = await updatePosition(day11UserA, [450, 250]);
+          assert.deepStrictEqual(res.location, [450, 250]);
+        }
+        assert.strictEqual(day11WriteCount, 0, 'Zero MongoDB writes should occur when position is unchanged');
+
+        // Minor movement of 0.5px
+        const movedRes = await updatePosition(day11UserA, [450.5, 250]);
+        assert.deepStrictEqual(movedRes.location, [450.5, 250]);
+        assert.strictEqual(day11WriteCount, 1, 'Exactly one write must occur when coordinates change');
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('7. should handle missing position records gracefully by creating with officeId, using user profile, or returning null', async () => {
+      setupDay11Mocks();
+      try {
+        const userWithoutRecord1 = new mongoose.Types.ObjectId();
+        const userWithoutRecord2 = new mongoose.Types.ObjectId();
+        const userWithoutRecord3 = new mongoose.Types.ObjectId();
+
+        // 1. OfficeId provided in options
+        const created1 = await updatePosition(userWithoutRecord1, [300, 300], { officeId: day11Office1, socketId: 'sock_new_1' });
+        assert.ok(created1, 'Should initialize position when officeId is provided in options');
+        assert.strictEqual(String(created1.officeId), String(day11Office1));
+        assert.deepStrictEqual(created1.location, [300, 300]);
+
+        // 2. User has currentOfficeId in User profile
+        day11UserStore.set(String(userWithoutRecord2), {
+          _id: userWithoutRecord2,
+          displayName: 'User with default office',
+          currentOfficeId: day11Office2
+        });
+        const created2 = await updatePosition(userWithoutRecord2, [400, 400]);
+        assert.ok(created2, 'Should auto-initialize position using user currentOfficeId');
+        assert.strictEqual(String(created2.officeId), String(day11Office2));
+        assert.deepStrictEqual(created2.location, [400, 400]);
+
+        // 3. User does not exist and no officeId provided -> safely returns null
+        const result3 = await updatePosition(userWithoutRecord3, [500, 500]);
+        assert.strictEqual(result3, null, 'Must safely return null when position cannot be created without office');
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('8. should surface database update failures without corrupting existing stored state', async () => {
+      setupDay11Mocks();
+      try {
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [200, 200],
+          socketId: 'sock_fail_test'
+        });
+
+        // Simulate database connection failure during update
+        const failMock = mock.method(LivePosition, 'findOneAndUpdate', async () => {
+          throw new Error('MongoNetworkTimeoutError: connection lost');
+        });
+
+        try {
+          await assert.rejects(
+            async () => await updatePosition(day11UserA, [250, 250]),
+            /MongoNetworkTimeoutError/
+          );
+        } finally {
+          failMock.mock.restore();
+        }
+
+        // Stored document must remain intact at [200, 200]
+        const stored = await getUserPosition(day11UserA);
+        assert.deepStrictEqual(stored.location, [200, 200], 'Original stored position must be preserved after failed write');
+        assert.strictEqual(stored.socketId, 'sock_fail_test');
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('9. should handle MongoDB E11000 duplicate key race condition in upsertPosition transparently', async () => {
+      setupDay11Mocks();
+      try {
+        let firstCall = true;
+        const raceMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+          if (options && options.upsert && firstCall) {
+            firstCall = false;
+            const duplicateKeyError = new Error('E11000 duplicate key error collection: proxispeak.livepositions index: userId_1');
+            duplicateKeyError.code = 11000;
+            throw duplicateKeyError;
+          }
+          // Fallback update on recovery
+          return {
+            _id: new mongoose.Types.ObjectId(),
+            userId: filter.userId,
+            officeId: update.$set.officeId,
+            location: update.$set.location,
+            socketId: update.$set.socketId,
+            lastUpdated: update.$set.lastUpdated
+          };
+        });
+
+        try {
+          const doc = await upsertPosition({
+            userId: day11UserA,
+            officeId: day11Office1,
+            location: [350, 350],
+            socketId: 'sock_race_recovery'
+          });
+
+          assert.ok(doc, 'Should transparently recover and return updated document');
+          assert.deepStrictEqual(doc.location, [350, 350]);
+          assert.strictEqual(doc.socketId, 'sock_race_recovery');
+        } finally {
+          raceMock.mock.restore();
+        }
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+
+    it('10. should recover and recreate record when document is removed between findOne and findOneAndUpdate', async () => {
+      setupDay11Mocks();
+      try {
+        await upsertPosition({
+          userId: day11UserA,
+          officeId: day11Office1,
+          location: [100, 100],
+          socketId: 'sock_race_del'
+        });
+
+        // Simulate document deleted right between findOne and findOneAndUpdate
+        let updatedReturned = false;
+        const deleteMidwayMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+          if (!options?.upsert && !updatedReturned) {
+            updatedReturned = true;
+            day11PositionStore.delete(String(filter.userId)); // Document vanished
+            return null;
+          }
+          // Fallback upsert
+          const doc = {
+            _id: new mongoose.Types.ObjectId(),
+            userId: filter.userId,
+            ...update.$set
+          };
+          day11PositionStore.set(String(filter.userId), doc);
+          return { ...doc };
+        });
+
+        try {
+          const recovered = await updatePosition(day11UserA, [180, 180]);
+          assert.ok(recovered, 'Should recreate document when race deletion occurs');
+          assert.deepStrictEqual(recovered.location, [180, 180]);
+          assert.strictEqual(String(recovered.officeId), String(day11Office1));
+          assert.strictEqual(day11PositionStore.size, 1);
+        } finally {
+          deleteMidwayMock.mock.restore();
+        }
+      } finally {
+        restoreDay11Mocks();
+      }
+    });
+  });
 });
