@@ -414,6 +414,34 @@ To ensure high-frequency avatar movements do not overwhelm the database or compr
 - **Mid-Update Deletion Recovery:** If a position record is removed (e.g. temporary disconnect) between `findOne` and `findOneAndUpdate`, `updatePosition` detects `!updated` and safely recreates the document using the fallback `officeId`.
 - **Database Failure Transparency:** Unrecoverable database errors (e.g. network disconnects, write timeouts) surface cleanly to the caller without corrupting in-memory state.
 
+### 3.9 MongoDB Query Optimization, Boundary Enforcement & Reliability Validation (Day 12)
+
+To ensure high reliability, type safety, and optimized database query execution under production workloads, the database layer incorporates the following optimizations:
+
+#### 1. Identifier Type Safety & Fast Rejection
+- All position service entrypoints (`upsertPosition`, `updatePosition`, `getNearbyUsers`, `getOfficePositions`) validate that `userId` and `officeId` are strictly valid non-empty strings or `mongoose.Types.ObjectId` instances.
+- Invalid identifier types (numbers, booleans, malformed objects) are rejected immediately prior to constructing Mongoose queries, preventing unhandled `CastError` exceptions.
+- Lookup/deletion operations (`getUserPosition`, `removeUserPosition`) safely return `null` for invalid identifiers rather than raising unhandled errors.
+
+#### 2. Configurable Room Boundary Enforcement
+- `updatePosition` supports configurable boundary enforcement via options:
+  - Specifying `{ validateBounds: true }` validates coordinates against default canvas bounds ($1000 \times 600$).
+  - Specifying `{ dimensions: { width, height } }` or `{ office: officeDoc }` validates coordinates against custom room dimensions.
+  - Coordinate updates exceeding room bounds throw descriptive validation errors before any database mutation occurs.
+
+#### 3. Query Optimization & Projection Efficiency
+- Position retrieval queries (`getOfficePositions`, `getNearbyUsers`) use explicit field projection (`.select('_id userId officeId location socketId lastUpdated')`) combined with `.lean()`.
+- Minimizes MongoDB wire protocol payload size, suppresses unnecessary internal Mongoose Document hydration, and accelerates response serialization.
+- Flexible parameter parsing supports both bare `officeId` and options object `{ officeId }` in `getOfficePositions`.
+
+#### 4. Atomic Cross-Office Transfers & Isolation
+- Room transfers (`updatePosition(userId, coords, { officeId: newOfficeId })`) update `location`, `officeId`, and `lastUpdated` within a single atomic MongoDB operation.
+- Immediate partition isolation: the user ceases appearing in queries for the former office and instantly appears in queries for the new office without intermediate states or duplicate documents.
+
+#### 5. Orphaned Document Fault-Tolerance
+- If a user account is removed from the database while a `LivePosition` document remains, `.populate('userId')` resolves to `null`.
+- Both `getNearbyUsers` and `getOfficePositions` apply fallback defaults (`displayName: 'Unknown'`, `avatarColor: '#3b82f6'`, `isOnline: false`, `userId: null`), safeguarding real-time API consumers from crashes.
+
 ---
 
 ## 4. Backend Service Contracts & Socket.io Integration

@@ -146,7 +146,13 @@ function validatePositionInOffice(location, officeOrDimensions = { width: 1000, 
  */
 async function upsertPosition({ userId, officeId, location, socketId = null }) {
   if (!userId) throw new Error('userId is required for position upsert');
+  if (typeof userId !== 'string' && !(userId instanceof mongoose.Types.ObjectId)) {
+    throw new Error('userId must be a valid ObjectId or string');
+  }
   if (!officeId) throw new Error('officeId is required for position upsert');
+  if (typeof officeId !== 'string' && !(officeId instanceof mongoose.Types.ObjectId)) {
+    throw new Error('officeId must be a valid ObjectId or string');
+  }
   const validLocation = validateCoordinates(location);
   if (validLocation[0] < 0 || validLocation[1] < 0) {
     throw new Error(`Coordinates must be non-negative planar canvas pixels: received [${validLocation[0]}, ${validLocation[1]}]`);
@@ -232,11 +238,14 @@ async function upsertPosition({ userId, officeId, location, socketId = null }) {
  *
  * @param {string|mongoose.Types.ObjectId} userId
  * @param {[number, number]} location - [x, y] coordinates
- * @param {object|string|mongoose.Types.ObjectId} [options] - Optional officeId or options object ({ officeId, socketId })
+ * @param {object|string|mongoose.Types.ObjectId} [options] - Optional officeId or options object ({ officeId, socketId, dimensions, validateBounds })
  * @returns {Promise<Document|null>}
  */
 async function updatePosition(userId, location, options = {}) {
   if (!userId) throw new Error('userId is required');
+  if (typeof userId !== 'string' && !(userId instanceof mongoose.Types.ObjectId)) {
+    throw new Error('userId must be a valid ObjectId or string');
+  }
   const validLocation = validateCoordinates(location);
   if (validLocation[0] < 0 || validLocation[1] < 0) {
     throw new Error(`Coordinates must be non-negative planar canvas pixels: received [${validLocation[0]}, ${validLocation[1]}]`);
@@ -244,6 +253,7 @@ async function updatePosition(userId, location, options = {}) {
 
   let targetOfficeId = null;
   let targetSocketId = undefined;
+  let officeDimensions = null;
 
   if (options) {
     if (typeof options === 'string' || options instanceof mongoose.Types.ObjectId) {
@@ -251,7 +261,16 @@ async function updatePosition(userId, location, options = {}) {
     } else if (typeof options === 'object') {
       targetOfficeId = options.officeId || null;
       targetSocketId = options.socketId;
+      if (options.dimensions || options.office) {
+        officeDimensions = options.dimensions || options.office;
+      } else if (options.validateBounds === true) {
+        officeDimensions = { width: 1000, height: 600 };
+      }
     }
+  }
+
+  if (officeDimensions) {
+    validatePositionInOffice(validLocation, officeDimensions);
   }
 
   const existing = await LivePosition.findOne({ userId });
@@ -342,7 +361,9 @@ async function updatePosition(userId, location, options = {}) {
  * @returns {Promise<Document|null>}
  */
 async function getUserPosition(userId) {
-  if (!userId) return null;
+  if (!userId || (typeof userId !== 'string' && !(userId instanceof mongoose.Types.ObjectId))) {
+    return null;
+  }
   return await LivePosition.findOne({ userId });
 }
 
@@ -366,6 +387,9 @@ async function getNearbyUsers({
   excludeUserId = null
 }) {
   if (!officeId) throw new Error('officeId is required');
+  if (typeof officeId !== 'string' && !(officeId instanceof mongoose.Types.ObjectId)) {
+    throw new Error('officeId must be a valid ObjectId or string');
+  }
   const [x, y] = validateCoordinates(location);
   const proximityRadius = Number(radius) > 0 ? Number(radius) : 100;
 
@@ -400,10 +424,10 @@ async function getNearbyUsers({
 
       return {
         id: pos._id,
-        userId: user._id || pos.userId,
-        socketId: pos.socketId,
+        userId: user._id || pos.userId || null,
+        socketId: pos.socketId || null,
         displayName: user.displayName || 'Unknown',
-        email: user.email,
+        email: user.email || null,
         avatarColor: user.avatarColor || '#3b82f6',
         avatarUrl: user.avatarUrl || '',
         isOnline: Boolean(user.isOnline),
@@ -421,11 +445,18 @@ async function getNearbyUsers({
 /**
  * Retrieve all live avatar positions in a specific office (used for initial office-state sync).
  *
- * @param {string|mongoose.Types.ObjectId} officeId
+ * @param {string|mongoose.Types.ObjectId|object} officeIdOrParams - Office ObjectId or options object with officeId
  * @returns {Promise<Array<object>>}
  */
-async function getOfficePositions(officeId) {
+async function getOfficePositions(officeIdOrParams) {
+  const officeId = typeof officeIdOrParams === 'object' && officeIdOrParams !== null && officeIdOrParams.officeId
+    ? officeIdOrParams.officeId
+    : officeIdOrParams;
+
   if (!officeId) throw new Error('officeId is required');
+  if (typeof officeId !== 'string' && !(officeId instanceof mongoose.Types.ObjectId)) {
+    throw new Error('officeId must be a valid ObjectId or string');
+  }
 
   const positions = await LivePosition.find({ officeId })
     .populate({
@@ -438,8 +469,8 @@ async function getOfficePositions(officeId) {
     const user = pos.userId || {};
     return {
       id: pos._id,
-      userId: user._id || pos.userId,
-      socketId: pos.socketId,
+      userId: user._id || pos.userId || null,
+      socketId: pos.socketId || null,
       displayName: user.displayName || 'Unknown',
       avatarColor: user.avatarColor || '#3b82f6',
       avatarUrl: user.avatarUrl || '',
@@ -457,7 +488,9 @@ async function getOfficePositions(officeId) {
  * @returns {Promise<Document|null>}
  */
 async function removeUserPosition(userId) {
-  if (!userId) return null;
+  if (!userId || (typeof userId !== 'string' && !(userId instanceof mongoose.Types.ObjectId))) {
+    return null;
+  }
   return await LivePosition.findOneAndDelete({ userId });
 }
 

@@ -13,6 +13,7 @@ const {
   updatePosition,
   getUserPosition,
   getOfficePositions,
+  removeUserPosition,
   isPositionWithinOffice,
   validatePositionInOffice
 } = require('../../src/services/positionService');
@@ -2677,6 +2678,530 @@ describe('Position Service & Contract Validation', () => {
         }
       } finally {
         restoreDay11Mocks();
+      }
+    });
+  });
+
+  describe('Day 12: MongoDB Query Optimization, Boundary Enforcement & Reliability Validation', () => {
+    const day12Office1 = new mongoose.Types.ObjectId();
+    const day12Office2 = new mongoose.Types.ObjectId();
+    const day12UserA = new mongoose.Types.ObjectId();
+    const day12UserB = new mongoose.Types.ObjectId();
+    const day12UserC = new mongoose.Types.ObjectId();
+
+    let day12PositionStore;
+    let day12UserStore;
+    let day12WriteCount;
+    let day12FindOneMock;
+    let day12FindOneAndUpdateMock;
+    let day12FindOneAndDeleteMock;
+    let day12FindByIdMock;
+    let day12FindMock;
+
+    function setupDay12Mocks() {
+      day12PositionStore = new Map();
+      day12UserStore = new Map();
+      day12WriteCount = 0;
+
+      day12FindOneMock = mock.method(LivePosition, 'findOne', async (filter) => {
+        if (filter.userId) {
+          const doc = day12PositionStore.get(String(filter.userId));
+          return doc ? { ...doc } : null;
+        }
+        if (filter.socketId) {
+          for (const doc of day12PositionStore.values()) {
+            if (doc.socketId === filter.socketId) return { ...doc };
+          }
+        }
+        return null;
+      });
+
+      day12FindOneAndUpdateMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+        day12WriteCount++;
+        const userId = String(filter.userId);
+        let doc = day12PositionStore.get(userId);
+
+        if (!doc) {
+          if (options && options.upsert) {
+            doc = {
+              _id: new mongoose.Types.ObjectId(),
+              userId: filter.userId,
+              createdAt: new Date(),
+              lastUpdated: new Date(),
+              ...update.$set
+            };
+            day12PositionStore.set(userId, doc);
+            return { ...doc };
+          }
+          return null;
+        }
+
+        Object.assign(doc, update.$set);
+        day12PositionStore.set(userId, doc);
+        return { ...doc };
+      });
+
+      day12FindOneAndDeleteMock = mock.method(LivePosition, 'findOneAndDelete', async (filter) => {
+        if (filter.userId) {
+          const userId = String(filter.userId);
+          const doc = day12PositionStore.get(userId);
+          if (doc) {
+            day12PositionStore.delete(userId);
+            return { ...doc };
+          }
+        }
+        if (filter.socketId) {
+          for (const [uid, doc] of day12PositionStore.entries()) {
+            if (doc.socketId === filter.socketId) {
+              day12PositionStore.delete(uid);
+              return { ...doc };
+            }
+          }
+        }
+        return null;
+      });
+
+      day12FindByIdMock = mock.method(User, 'findById', (id) => {
+        return {
+          lean: async () => {
+            return day12UserStore.get(String(id)) || null;
+          }
+        };
+      });
+
+      day12FindMock = mock.method(LivePosition, 'find', (query) => {
+        const executeQuery = async () => {
+          const results = [];
+          for (const doc of day12PositionStore.values()) {
+            if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+              continue;
+            }
+            if (query.userId?.$ne && String(doc.userId?._id || doc.userId) === String(query.userId.$ne)) {
+              continue;
+            }
+            if (query.location?.$geoWithin?.$center) {
+              const [[cx, cy], maxRadius] = query.location.$geoWithin.$center;
+              const [x, y] = doc.location;
+              const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+              if (dist > maxRadius) {
+                continue;
+              }
+            }
+            const user = day12UserStore.get(String(doc.userId)) || null;
+            results.push({
+              ...doc,
+              userId: user
+            });
+          }
+          return results;
+        };
+
+        const chainable = {
+          select: () => chainable,
+          populate: () => chainable,
+          lean: executeQuery
+        };
+
+        return chainable;
+      });
+    }
+
+    function restoreDay12Mocks() {
+      if (day12FindOneMock) day12FindOneMock.mock.restore();
+      if (day12FindOneAndUpdateMock) day12FindOneAndUpdateMock.mock.restore();
+      if (day12FindOneAndDeleteMock) day12FindOneAndDeleteMock.mock.restore();
+      if (day12FindByIdMock) day12FindByIdMock.mock.restore();
+      if (day12FindMock) day12FindMock.mock.restore();
+    }
+
+    it('1. should verify schema index definitions support all LivePosition query and update patterns', () => {
+      const indexes = LivePosition.schema.indexes();
+
+      // Compound 2D index { officeId: 1, location: '2d' }
+      const compoundEntry = indexes.find(([fields]) => fields.officeId === 1 && fields.location === '2d');
+      assert.ok(compoundEntry, 'Schema must define compound index { officeId: 1, location: "2d" }');
+      const [compoundFields] = compoundEntry;
+      assert.strictEqual(Object.keys(compoundFields)[0], 'officeId', 'officeId must be leading key for room partitioning');
+      assert.strictEqual(Object.keys(compoundFields)[1], 'location', 'location must be secondary 2d planar index key');
+
+      // Unique userId index { userId: 1 }
+      const userEntry = indexes.find(([fields, opts]) => fields.userId === 1 && opts?.unique === true);
+      assert.ok(userEntry, 'Schema must define unique index on { userId: 1 }');
+
+      // Single-field officeId index { officeId: 1 }
+      const officeEntry = indexes.find(([fields]) => Object.keys(fields).length === 1 && fields.officeId === 1);
+      assert.ok(officeEntry, 'Schema must define single-field index { officeId: 1 }');
+
+      // Single-field socketId index { socketId: 1 }
+      const socketEntry = indexes.find(([fields]) => Object.keys(fields).length === 1 && fields.socketId === 1);
+      assert.ok(socketEntry, 'Schema must define index on { socketId: 1 }');
+    });
+
+    it('2. should enforce office isolation during concurrent queries across multiple offices', async () => {
+      setupDay12Mocks();
+      try {
+        await upsertPosition({
+          userId: day12UserA,
+          officeId: day12Office1,
+          location: [250, 250],
+          socketId: 'sock_off1'
+        });
+        await upsertPosition({
+          userId: day12UserB,
+          officeId: day12Office2,
+          location: [250, 250],
+          socketId: 'sock_off2'
+        });
+
+        day12UserStore.set(String(day12UserA), { _id: day12UserA, displayName: 'User Office 1' });
+        day12UserStore.set(String(day12UserB), { _id: day12UserB, displayName: 'User Office 2' });
+
+        // Query Office 1 using bare ObjectId
+        const office1Users = await getOfficePositions(day12Office1);
+        assert.strictEqual(office1Users.length, 1);
+        assert.strictEqual(String(office1Users[0].userId), String(day12UserA));
+
+        // Query Office 2 using options object { officeId }
+        const office2Users = await getOfficePositions({ officeId: day12Office2 });
+        assert.strictEqual(office2Users.length, 1);
+        assert.strictEqual(String(office2Users[0].userId), String(day12UserB));
+
+        // Proximity query in Office 1 must strictly exclude User B in Office 2
+        const nearbyInOffice1 = await getNearbyUsers({
+          officeId: day12Office1,
+          location: [250, 250],
+          radius: 100
+        });
+        assert.strictEqual(nearbyInOffice1.length, 1);
+        assert.strictEqual(String(nearbyInOffice1[0].userId), String(day12UserA));
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('3. should calculate proximity accurately across multiple peers and adapt to custom whisper zones', async () => {
+      setupDay12Mocks();
+      try {
+        const pivot = [500, 300];
+        const p1 = new mongoose.Types.ObjectId();
+        const p2 = new mongoose.Types.ObjectId();
+        const p3 = new mongoose.Types.ObjectId();
+        const p4 = new mongoose.Types.ObjectId();
+
+        await upsertPosition({ userId: p1, officeId: day12Office1, location: [515, 300] }); // d = 15px
+        await upsertPosition({ userId: p2, officeId: day12Office1, location: [500, 345] }); // d = 45px
+        await upsertPosition({ userId: p3, officeId: day12Office1, location: [575, 300] }); // d = 75px
+        await upsertPosition({ userId: p4, officeId: day12Office1, location: [620, 300] }); // d = 120px
+
+        day12UserStore.set(String(p1), { _id: p1, displayName: 'Peer 15px' });
+        day12UserStore.set(String(p2), { _id: p2, displayName: 'Peer 45px' });
+        day12UserStore.set(String(p3), { _id: p3, displayName: 'Peer 75px' });
+        day12UserStore.set(String(p4), { _id: p4, displayName: 'Peer 120px' });
+
+        // Default 100px proximity radius: returns 3 peers (p1, p2, p3), excludes p4
+        const normalResults = await getNearbyUsers({
+          officeId: day12Office1,
+          location: pivot,
+          radius: 100
+        });
+        assert.strictEqual(normalResults.length, 3, 'Should find 3 peers within 100px');
+        assert.strictEqual(normalResults[0].distance, 15);
+        assert.strictEqual(normalResults[1].distance, 45);
+        assert.strictEqual(normalResults[2].distance, 75);
+
+        // Whisper zone radius 50px: returns 2 peers (p1, p2), excludes p3 and p4
+        const whisperResults = await getNearbyUsers({
+          officeId: day12Office1,
+          location: pivot,
+          radius: 50
+        });
+        assert.strictEqual(whisperResults.length, 2, 'Should find 2 peers within 50px whisper zone');
+        assert.strictEqual(whisperResults[0].distance, 15);
+        assert.strictEqual(whisperResults[1].distance, 45);
+        assert.ok(whisperResults[0].gain > whisperResults[1].gain);
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('4. should enforce canvas and custom office boundaries in updatePosition when bounds validation is enabled', async () => {
+      setupDay12Mocks();
+      try {
+        await upsertPosition({
+          userId: day12UserA,
+          officeId: day12Office1,
+          location: [500, 300]
+        });
+
+        // Valid corner positions with validateBounds: true
+        const cornerDoc = await updatePosition(day12UserA, [1000, 600], { validateBounds: true });
+        assert.deepStrictEqual(cornerDoc.location, [1000, 600]);
+
+        const originDoc = await updatePosition(day12UserA, [0, 0], { validateBounds: true });
+        assert.deepStrictEqual(originDoc.location, [0, 0]);
+
+        // Boundary exceedance with validateBounds: true (default 1000x600)
+        await assert.rejects(
+          async () => await updatePosition(day12UserA, [1005, 300], { validateBounds: true }),
+          /X coordinate \(1005\) exceeds office width \(1000\)/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day12UserA, [500, 605], { validateBounds: true }),
+          /Y coordinate \(605\) exceeds office height \(600\)/
+        );
+
+        // Custom room dimensions { width: 800, height: 400 }
+        const customOfficeOpts = { dimensions: { width: 800, height: 400 } };
+        await assert.rejects(
+          async () => await updatePosition(day12UserA, [850, 200], customOfficeOpts),
+          /X coordinate \(850\) exceeds office width \(800\)/
+        );
+        await assert.rejects(
+          async () => await updatePosition(day12UserA, [200, 450], customOfficeOpts),
+          /Y coordinate \(450\) exceeds office height \(400\)/
+        );
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('5. should reject invalid user and office identifiers with descriptive validation errors', async () => {
+      setupDay12Mocks();
+      try {
+        // upsertPosition: non-string/non-ObjectId userId
+        await assert.rejects(
+          async () => await upsertPosition({ userId: 12345, officeId: day12Office1, location: [100, 100] }),
+          /userId must be a valid ObjectId or string/
+        );
+        await assert.rejects(
+          async () => await upsertPosition({ userId: {}, officeId: day12Office1, location: [100, 100] }),
+          /userId must be a valid ObjectId or string/
+        );
+
+        // upsertPosition: non-string/non-ObjectId officeId
+        await assert.rejects(
+          async () => await upsertPosition({ userId: day12UserA, officeId: 99999, location: [100, 100] }),
+          /officeId must be a valid ObjectId or string/
+        );
+        await assert.rejects(
+          async () => await upsertPosition({ userId: day12UserA, officeId: true, location: [100, 100] }),
+          /officeId must be a valid ObjectId or string/
+        );
+
+        // updatePosition: non-string/non-ObjectId userId
+        await assert.rejects(
+          async () => await updatePosition(12345, [100, 100]),
+          /userId must be a valid ObjectId or string/
+        );
+
+        // getNearbyUsers: non-string/non-ObjectId officeId
+        await assert.rejects(
+          async () => await getNearbyUsers({ officeId: 12345, location: [100, 100] }),
+          /officeId must be a valid ObjectId or string/
+        );
+
+        // getOfficePositions: non-string/non-ObjectId officeId
+        await assert.rejects(
+          async () => await getOfficePositions(12345),
+          /officeId must be a valid ObjectId or string/
+        );
+
+        // getUserPosition and removeUserPosition: safely return null for invalid userId
+        assert.strictEqual(await getUserPosition(12345), null);
+        assert.strictEqual(await getUserPosition(null), null);
+        assert.strictEqual(await removeUserPosition(12345), null);
+        assert.strictEqual(await removeUserPosition(null), null);
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('6. should transition user between offices atomically in-place and update office position listings', async () => {
+      setupDay12Mocks();
+      try {
+        await upsertPosition({
+          userId: day12UserA,
+          officeId: day12Office1,
+          location: [150, 150],
+          socketId: 'sock_xfer_test'
+        });
+
+        day12UserStore.set(String(day12UserA), { _id: day12UserA, displayName: 'Switching User' });
+
+        // Verify initial presence in office 1
+        const initialOff1 = await getOfficePositions(day12Office1);
+        assert.strictEqual(initialOff1.length, 1);
+
+        // Atomic transfer to office 2
+        const transferred = await updatePosition(day12UserA, [600, 450], { officeId: day12Office2 });
+        assert.strictEqual(String(transferred.officeId), String(day12Office2));
+        assert.deepStrictEqual(transferred.location, [600, 450]);
+
+        // Old office query must be empty
+        const off1After = await getOfficePositions(day12Office1);
+        assert.strictEqual(off1After.length, 0, 'User must be absent from former office');
+
+        // New office query must contain user
+        const off2After = await getOfficePositions(day12Office2);
+        assert.strictEqual(off2After.length, 1, 'User must be present in new office');
+        assert.strictEqual(String(off2After[0].userId), String(day12UserA));
+
+        // Collection contains strictly 1 record for this user
+        assert.strictEqual(day12PositionStore.size, 1);
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('7. should process concurrent position updates from multiple active users without state collision', async () => {
+      setupDay12Mocks();
+      try {
+        await upsertPosition({ userId: day12UserA, officeId: day12Office1, location: [100, 100] });
+        await upsertPosition({ userId: day12UserB, officeId: day12Office1, location: [200, 200] });
+        await upsertPosition({ userId: day12UserC, officeId: day12Office1, location: [300, 300] });
+
+        // Concurrent position updates
+        const [resA, resB, resC] = await Promise.all([
+          updatePosition(day12UserA, [115, 115]),
+          updatePosition(day12UserB, [225, 225]),
+          updatePosition(day12UserC, [335, 335])
+        ]);
+
+        assert.deepStrictEqual(resA.location, [115, 115]);
+        assert.deepStrictEqual(resB.location, [225, 225]);
+        assert.deepStrictEqual(resC.location, [335, 335]);
+
+        assert.strictEqual(day12PositionStore.size, 3, 'Must maintain exactly 3 documents for 3 users');
+        const posA = await getUserPosition(day12UserA);
+        const posB = await getUserPosition(day12UserB);
+        const posC = await getUserPosition(day12UserC);
+
+        assert.deepStrictEqual(posA.location, [115, 115]);
+        assert.deepStrictEqual(posB.location, [225, 225]);
+        assert.deepStrictEqual(posC.location, [335, 335]);
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('8. should surface database errors gracefully across query and update methods without corrupting state', async () => {
+      setupDay12Mocks();
+      try {
+        await upsertPosition({
+          userId: day12UserA,
+          officeId: day12Office1,
+          location: [250, 250]
+        });
+
+        // 1. Query failure in getNearbyUsers
+        const queryFailMock = mock.method(LivePosition, 'find', () => {
+          throw new Error('MongoServerSelectionError: cluster unavailable');
+        });
+        try {
+          await assert.rejects(
+            async () => await getNearbyUsers({ officeId: day12Office1, location: [250, 250] }),
+            /MongoServerSelectionError/
+          );
+        } finally {
+          queryFailMock.mock.restore();
+        }
+
+        // 2. Query failure in getOfficePositions
+        const officeFailMock = mock.method(LivePosition, 'find', () => {
+          throw new Error('MongoNetworkError: connection closed');
+        });
+        try {
+          await assert.rejects(
+            async () => await getOfficePositions(day12Office1),
+            /MongoNetworkError/
+          );
+        } finally {
+          officeFailMock.mock.restore();
+        }
+
+        // 3. Write concern error in upsertPosition
+        const writeFailMock = mock.method(LivePosition, 'findOneAndUpdate', async () => {
+          throw new Error('MongoWriteConcernError: write timeout');
+        });
+        try {
+          await assert.rejects(
+            async () => await upsertPosition({ userId: day12UserB, officeId: day12Office1, location: [100, 100] }),
+            /MongoWriteConcernError/
+          );
+        } finally {
+          writeFailMock.mock.restore();
+        }
+
+        // Existing document for User A must remain intact
+        const existingDoc = await getUserPosition(day12UserA);
+        assert.deepStrictEqual(existingDoc.location, [250, 250]);
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('9. should handle orphaned live positions gracefully when user profile has been deleted', async () => {
+      setupDay12Mocks();
+      try {
+        const deletedUser = new mongoose.Types.ObjectId();
+        await upsertPosition({
+          userId: deletedUser,
+          officeId: day12Office1,
+          location: [400, 250],
+          socketId: 'sock_orphan'
+        });
+
+        // User store does NOT have entry for deletedUser (simulating deleted user in User collection)
+
+        // getNearbyUsers should safely return record with fallback defaults
+        const nearby = await getNearbyUsers({
+          officeId: day12Office1,
+          location: [400, 250],
+          radius: 100
+        });
+        assert.strictEqual(nearby.length, 1);
+        assert.strictEqual(nearby[0].displayName, 'Unknown');
+        assert.strictEqual(nearby[0].avatarColor, '#3b82f6');
+        assert.strictEqual(nearby[0].isOnline, false);
+        assert.strictEqual(nearby[0].userId, null);
+
+        // getOfficePositions should also safely handle orphaned position
+        const officeList = await getOfficePositions(day12Office1);
+        assert.strictEqual(officeList.length, 1);
+        assert.strictEqual(officeList[0].displayName, 'Unknown');
+        assert.strictEqual(officeList[0].avatarColor, '#3b82f6');
+        assert.strictEqual(officeList[0].isOnline, false);
+        assert.strictEqual(officeList[0].userId, null);
+      } finally {
+        restoreDay12Mocks();
+      }
+    });
+
+    it('10. should suppress redundant MongoDB writes during repeated updates and trigger write on delta', async () => {
+      setupDay12Mocks();
+      try {
+        await upsertPosition({
+          userId: day12UserA,
+          officeId: day12Office1,
+          location: [500, 300],
+          socketId: 'sock_steady'
+        });
+
+        day12WriteCount = 0; // Reset write counter
+
+        // Repeated updates with exact same coordinates
+        for (let i = 0; i < 5; i++) {
+          const res = await updatePosition(day12UserA, [500, 300]);
+          assert.deepStrictEqual(res.location, [500, 300]);
+        }
+        assert.strictEqual(day12WriteCount, 0, 'Zero MongoDB writes should occur for stationary avatar');
+
+        // Coordinate delta of 0.25px
+        const moved = await updatePosition(day12UserA, [500.25, 300]);
+        assert.deepStrictEqual(moved.location, [500.25, 300]);
+        assert.strictEqual(day12WriteCount, 1, 'Exactly one write must occur when position changes');
+      } finally {
+        restoreDay12Mocks();
       }
     });
   });
