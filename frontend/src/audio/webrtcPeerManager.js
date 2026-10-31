@@ -83,8 +83,11 @@ export class WebRTCPeerManager {
     this.onPeerRemoved = options.onPeerRemoved || (() => {});
     this.reconnectDelays = options.reconnectDelays || [1000, 2000, 4000];
     this.disconnectGracePeriod = options.disconnectGracePeriod ?? 3000;
+    this.localPosition = options.localPosition || null;
+    this.earshotRadius = options.earshotRadius ?? 100;
 
     this.peers = new Map(); // peerId -> Session
+    this.peerPositions = new Map();
     this.desiredPeers = new Set();
     this.reconnectAttempts = new Map();
     this.reconnectTimers = new Map();
@@ -162,9 +165,76 @@ export class WebRTCPeerManager {
 
     this.unsubSignaling.push(
       this.signalingTransport.on('voice:user-left', (payload) => {
+        this.peerPositions.delete(payload.userId);
         this.closePeer(payload.userId);
       })
     );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on('voice:user-joined', (payload) => {
+        if (payload.officeId && payload.officeId !== this.officeId) return;
+        this.updatePeerPosition(payload.userId, payload.position);
+      })
+    );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on('proximity:position-update', (payload) => {
+        if (payload.officeId && payload.officeId !== this.officeId) return;
+        this.updatePeerPosition(payload.userId, payload.position);
+      })
+    );
+  }
+
+  setLocalPosition(position, earshotRadius = this.earshotRadius) {
+    this.localPosition = position;
+    this.earshotRadius = earshotRadius;
+
+    for (const [peerId, peerPosition] of this.peerPositions) {
+      this._updatePeerProximity(peerId, peerPosition);
+    }
+  }
+
+  updatePeerPosition(peerId, position) {
+    if (
+      !peerId ||
+      peerId === this.localUserId ||
+      !position ||
+      !Number.isFinite(position.x) ||
+      !Number.isFinite(position.y)
+    ) {
+      return;
+    }
+
+    this.peerPositions.set(peerId, position);
+    this._updatePeerProximity(peerId, position);
+  }
+
+  getPeerPosition(peerId) {
+    return this.peerPositions.get(peerId) || null;
+  }
+
+  _updatePeerProximity(peerId, peerPosition) {
+    if (
+      !this.localPosition ||
+      !Number.isFinite(this.localPosition.x) ||
+      !Number.isFinite(this.localPosition.y)
+    ) {
+      return;
+    }
+
+    const distance = Math.hypot(
+      peerPosition.x - this.localPosition.x,
+      peerPosition.y - this.localPosition.y
+    );
+
+    if (distance <= this.earshotRadius) {
+      void this.initiateConnection(peerId);
+    } else if (
+      distance > this.earshotRadius * 1.5 &&
+      this.peers.has(peerId)
+    ) {
+      this.closePeer(peerId);
+    }
   }
 
   /**
@@ -554,6 +624,7 @@ export class WebRTCPeerManager {
     this.disconnectTimers.clear();
     this.reconnectAttempts.clear();
     this.desiredPeers.clear();
+    this.peerPositions.clear();
     this.localStream = null;
   }
 }

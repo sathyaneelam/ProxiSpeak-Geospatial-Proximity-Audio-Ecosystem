@@ -59,7 +59,7 @@ export function useProximityAudio({
   /**
    * Initializes signaling and WebRTC managers
    */
-  const initNetworking = useCallback(async () => {
+  const initNetworking = useCallback(async (localStream) => {
     try {
       let transport;
       if (preferredTransport === 'socketio') {
@@ -68,21 +68,17 @@ export function useProximityAudio({
         transport = new BroadcastSignalingTransport('proxispeak_signaling_room');
       }
 
-      await transport.connect({
-        userId,
-        officeId,
-        position: localPosition,
-      });
-
-      signalingRef.current = transport;
-
       const peerManager = new WebRTCPeerManager({
         localUserId: userId,
         officeId,
         signalingTransport: transport,
+        localPosition,
+        earshotRadius,
         onRemoteStream: (peerId, stream) => {
           const peer = peers.find((p) => p.id === peerId || p.name === peerId);
-          const peerPos = peer ? { x: peer.x, y: peer.y } : { x: 0, y: 0 };
+          const peerPos =
+            peerManagerRef.current?.getPeerPosition(peerId) ||
+            (peer ? { x: peer.x, y: peer.y } : { x: 0, y: 0 });
           spatialGraphRef.current.addPeerStream(peerId, stream, peerPos, localPosition, earshotRadius);
         },
         onPeerConnectionState: (peerId, state) => {
@@ -104,9 +100,21 @@ export function useProximityAudio({
         },
       });
 
+      peerManager.setLocalStream(localStream);
+      signalingRef.current = transport;
       peerManagerRef.current = peerManager;
+
+      await transport.connect({
+        userId,
+        officeId,
+        position: localPosition,
+      });
     } catch (err) {
-      console.error('[useProximityAudio] Networking init error:', err);
+      peerManagerRef.current?.destroy();
+      signalingRef.current?.disconnect();
+      peerManagerRef.current = null;
+      signalingRef.current = null;
+      throw err;
     }
   }, [userId, officeId, localPosition, peers, earshotRadius, signalingUrl, preferredTransport]);
 
@@ -127,16 +135,16 @@ export function useProximityAudio({
 
       // 3. Initialize signaling if not ready
       if (!signalingRef.current || !peerManagerRef.current) {
-        await initNetworking();
+        await initNetworking(stream);
+      } else {
+        peerManagerRef.current.setLocalStream(stream);
       }
-
-      // 4. Attach stream to peer manager
-      peerManagerRef.current.setLocalStream(stream);
 
       setIsAudioActive(true);
       setIsMuted(false);
       setAudioState('connected');
     } catch (err) {
+      mediaManagerRef.current?.stopStream();
       setAudioError(err.message || 'Failed to initialize audio.');
       setAudioState('error');
       setIsAudioActive(false);
@@ -169,6 +177,7 @@ export function useProximityAudio({
 
     setIsAudioActive(false);
     setIsMuted(false);
+    setAudioContextReady(false);
     setAudioState('idle');
     setPeerMetrics({});
   }, []);
@@ -245,6 +254,8 @@ export function useProximityAudio({
   useEffect(() => {
     if (!localPosition) return;
 
+    peerManagerRef.current?.setLocalPosition(localPosition, earshotRadius);
+
     // Send position update to peers if signaling is connected
     signalingRef.current?.updatePosition(localPosition);
 
@@ -256,6 +267,11 @@ export function useProximityAudio({
       const isNearby = distance <= earshotRadius;
       const gain = computeSpatialGain(distance, earshotRadius);
       const pan = computeStereoPan(localPosition.x, peer.x, earshotRadius);
+
+      peerManagerRef.current?.updatePeerPosition(peerId, {
+        x: peer.x,
+        y: peer.y,
+      });
 
       // Update spatial graph if peer has active stream
       spatialGraphRef.current?.updatePeerSpatial(

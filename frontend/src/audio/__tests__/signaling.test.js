@@ -9,7 +9,11 @@ import {
   createAnswerPayload,
   createIceCandidatePayload,
 } from '../signalingContract.js';
-import { BaseSignalingTransport, SocketIOSignalingTransport } from '../signalingAdapter.js';
+import {
+  BaseSignalingTransport,
+  BroadcastSignalingTransport,
+  SocketIOSignalingTransport,
+} from '../signalingAdapter.js';
 
 describe('Signaling Contract & Adapter - Event Payloads and Validation', () => {
   test('isValidPosition properly checks 2D coordinate objects', () => {
@@ -138,5 +142,62 @@ describe('Signaling Contract & Adapter - Event Payloads and Validation', () => {
         position: { x: 30, y: 40 },
       },
     });
+  });
+
+  test('Broadcast transport discovers existing users when a new tab joins', async () => {
+    const originalBroadcastChannel = globalThis.BroadcastChannel;
+    const channels = new Map();
+
+    globalThis.BroadcastChannel = class {
+      constructor(name) {
+        this.name = name;
+        if (!channels.has(name)) channels.set(name, new Set());
+        channels.get(name).add(this);
+      }
+
+      postMessage(data) {
+        for (const channel of channels.get(this.name) || []) {
+          if (channel !== this && channel.onmessage) {
+            queueMicrotask(() => channel.onmessage({ data }));
+          }
+        }
+      }
+
+      close() {
+        channels.get(this.name)?.delete(this);
+      }
+    };
+
+    const first = new BroadcastSignalingTransport('test-room');
+    const second = new BroadcastSignalingTransport('test-room');
+    const firstUsers = [];
+    const secondUsers = [];
+    first.on(SIGNALING_EVENTS.VOICE_USER_JOINED, (payload) =>
+      firstUsers.push(payload.userId)
+    );
+    second.on(SIGNALING_EVENTS.VOICE_USER_JOINED, (payload) =>
+      secondUsers.push(payload.userId)
+    );
+
+    try {
+      await first.connect({
+        userId: 'first',
+        officeId: 'office',
+        position: { x: 10, y: 20 },
+      });
+      await second.connect({
+        userId: 'second',
+        officeId: 'office',
+        position: { x: 30, y: 40 },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      assert.ok(firstUsers.includes('second'));
+      assert.ok(secondUsers.includes('first'));
+    } finally {
+      first.disconnect();
+      second.disconnect();
+      globalThis.BroadcastChannel = originalBroadcastChannel;
+    }
   });
 });

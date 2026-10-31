@@ -66,6 +66,7 @@ class MockRTCPeerConnection {
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
+    this.addedIceCandidates = [];
   }
 
   getSenders() {
@@ -86,20 +87,68 @@ class MockRTCPeerConnection {
 
   setLocalDescription(desc) {
     this.localDescription = desc || { type: 'offer', sdp: 'local' };
+    this.signalingState =
+      this.localDescription.type === 'offer' ? 'have-local-offer' : 'stable';
     return Promise.resolve();
   }
 
   setRemoteDescription(desc) {
     this.remoteDescription = desc;
+    this.signalingState =
+      desc.type === 'offer' ? 'have-remote-offer' : 'stable';
     return Promise.resolve();
   }
 
   addIceCandidate(cand) {
+    this.addedIceCandidates.push(cand);
     return Promise.resolve(cand);
   }
 
   close() {
     this.connectionState = 'closed';
+  }
+}
+
+class MockSignalingTransport {
+  constructor(userId) {
+    this.userId = userId;
+    this.listeners = new Map();
+    this.sentOffers = [];
+    this.sentAnswers = [];
+    this.peer = null;
+  }
+
+  on(event, handler) {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event).add(handler);
+    return () => this.listeners.get(event)?.delete(handler);
+  }
+
+  emit(event, payload) {
+    for (const handler of this.listeners.get(event) || []) handler(payload);
+  }
+
+  sendOffer(payload) {
+    this.sentOffers.push(payload);
+    this.peer?.emit('webrtc:offer', {
+      fromUserId: this.userId,
+      sdp: payload.sdp,
+    });
+  }
+
+  sendAnswer(payload) {
+    this.sentAnswers.push(payload);
+    this.peer?.emit('webrtc:answer', {
+      fromUserId: this.userId,
+      sdp: payload.sdp,
+    });
+  }
+
+  sendIceCandidate(payload) {
+    this.peer?.emit('webrtc:ice-candidate', {
+      fromUserId: this.userId,
+      candidate: payload.candidate,
+    });
   }
 }
 
@@ -221,6 +270,89 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     const session2 = manager.getOrCreatePeer('remote-1');
     assert.equal(session1, session2, 'Must return the existing active peer session');
     assert.equal(manager.peers.size, 1);
+  });
+
+  test('exchanges offer, answer, and ICE candidates between two peer managers', async () => {
+    const aliceTransport = new MockSignalingTransport('alice');
+    const bobTransport = new MockSignalingTransport('bob');
+    aliceTransport.peer = bobTransport;
+    bobTransport.peer = aliceTransport;
+    const alice = new WebRTCPeerManager({
+      localUserId: 'alice',
+      signalingTransport: aliceTransport,
+    });
+    const bob = new WebRTCPeerManager({
+      localUserId: 'bob',
+      signalingTransport: bobTransport,
+    });
+
+    try {
+      await alice.initiateConnection('bob');
+      await waitFor(() => alice.peers.get('bob')?.pc.remoteDescription?.type === 'answer');
+
+      assert.equal(aliceTransport.sentOffers.length, 1);
+      assert.equal(bobTransport.sentAnswers.length, 1);
+      assert.equal(bob.peers.get('alice').pc.remoteDescription.type, 'offer');
+      assert.equal(alice.peers.get('bob').pc.remoteDescription.type, 'answer');
+
+      alice.peers.get('bob').pc.onicecandidate({
+        candidate: { candidate: 'candidate:alice' },
+      });
+      await waitFor(() => bob.peers.get('alice').pc.addedIceCandidates.length === 1);
+      assert.equal(
+        bob.peers.get('alice').pc.addedIceCandidates[0].candidate,
+        'candidate:alice'
+      );
+    } finally {
+      alice.destroy();
+      bob.destroy();
+    }
+  });
+
+  test('discovers peers from signaling and negotiates only within earshot', async () => {
+    const transport = new MockSignalingTransport('local');
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local',
+      officeId: 'office-1',
+      localPosition: { x: 0, y: 0 },
+      earshotRadius: 100,
+      signalingTransport: transport,
+    });
+
+    try {
+      transport.emit('voice:user-joined', {
+        userId: 'near-peer',
+        officeId: 'office-1',
+        position: { x: 40, y: 0 },
+      });
+      transport.emit('voice:user-joined', {
+        userId: 'far-peer',
+        officeId: 'office-1',
+        position: { x: 300, y: 0 },
+      });
+      await waitFor(() => transport.sentOffers.length === 1);
+
+      assert.ok(manager.peers.has('near-peer'));
+      assert.equal(manager.peers.has('far-peer'), false);
+
+      transport.emit('proximity:position-update', {
+        userId: 'far-peer',
+        officeId: 'office-1',
+        position: { x: 50, y: 0 },
+      });
+      await waitFor(() => transport.sentOffers.length === 2);
+      assert.ok(manager.peers.has('far-peer'));
+
+      transport.emit('voice:user-left', { userId: 'near-peer' });
+      assert.equal(manager.peers.has('near-peer'), false);
+      assert.equal(manager.getPeerPosition('near-peer'), null);
+    } finally {
+      manager.destroy();
+    }
+
+    for (const listeners of transport.listeners.values()) {
+      assert.equal(listeners.size, 0);
+    }
   });
 
   test('reports WebRTC connection-state changes for the peer', () => {

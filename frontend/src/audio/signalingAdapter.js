@@ -224,11 +224,16 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
     this.channel = null;
     this.userId = null;
     this.officeId = null;
+    this.position = null;
+    this.knownUsers = new Set();
   }
 
   async connect({ userId, officeId, position }) {
     this.userId = userId;
     this.officeId = officeId;
+    this.position = position;
+    this.knownUsers.clear();
+    this.knownUsers.add(userId);
 
     if (typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel(`${this.channelName}_${officeId}`);
@@ -239,8 +244,24 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
         // Skip messages sent by self
         if (payload.fromUserId === this.userId || payload.userId === this.userId) return;
 
+        if (type === SIGNALING_EVENTS.VOICE_USER_LEFT) {
+          this.knownUsers.delete(payload.userId);
+        }
+
         // Route if message is targeted to this user or broadcast to room
         if (!payload.toUserId || payload.toUserId === this.userId) {
+          if (
+            type === SIGNALING_EVENTS.VOICE_USER_JOINED &&
+            payload.userId &&
+            !this.knownUsers.has(payload.userId)
+          ) {
+            this.knownUsers.add(payload.userId);
+            this._broadcast(SIGNALING_EVENTS.VOICE_USER_JOINED, {
+              userId: this.userId,
+              officeId: this.officeId,
+              position: this.position,
+            });
+          }
           this.emitLocal(type, payload);
         }
       };
@@ -293,6 +314,7 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
   }
 
   updatePosition(position) {
+    this.position = position;
     this._broadcast(SIGNALING_EVENTS.PROXIMITY_UPDATE, {
       userId: this.userId,
       officeId: this.officeId,
@@ -313,5 +335,6 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       this.channel.close();
       this.channel = null;
     }
+    this.knownUsers.clear();
   }
 }

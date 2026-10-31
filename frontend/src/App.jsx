@@ -25,6 +25,10 @@ function App() {
   const keysRef = useRef(new Set())
   const playerRef = useRef({ x: 500, y: 300 })
   const [position, setPosition] = useState({ x: 500, y: 300 })
+  const [userId] = useState(() => {
+    const id = globalThis.crypto?.randomUUID?.()
+    return `user_${id || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`
+  })
 
   const signalingUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SIGNALING_URL) || 'http://localhost:3000'
 
@@ -43,7 +47,7 @@ function App() {
     toggleDeafen,
     toggleToneSimulation,
   } = useProximityAudio({
-    userId: 'user_player',
+    userId,
     officeId: 'floor_01',
     localPosition: position,
     peers: colleagues,

@@ -207,14 +207,15 @@ Audio parameters are scheduled using `setTargetAtTime(target, currentTime, 0.05)
 1. Open two browser windows side-by-side at `http://localhost:5173`.
 2. Window 1: Click **🎙️ Connect Spatial Voice**, grant microphone access.
 3. Window 2: Click **🎙️ Connect Spatial Voice**, grant microphone access.
-4. Using WASD, navigate Window 1's avatar near Window 2's avatar.
-5. As avatars enter within 100px:
-   - WebRTC P2P peer connection is established.
-   - Live speaking from Window 1 is heard in Window 2.
-   - Moving Window 1 further away attenuates volume smoothly.
-   - Moving Window 1 left/right shifts the audio pan in Window 2's headphones.
-6. Click **Mute Microphone** in Window 1: verify remote audio stops.
-7. Click **Disconnect**: verify tracks and connections are torn down cleanly.
+4. Each tab announces a unique user ID and position; if the users are within 100px, verify the offer, answer, and ICE exchange establishes one peer connection.
+5. Speak in Window 1 and verify audio in Window 2. Move either avatar:
+   - Volume attenuates smoothly with distance and reaches silence outside earshot.
+   - Moving left/right shifts audio pan in stereo headphones.
+   - Moving beyond 150px releases the peer; moving back within 100px reconnects it.
+6. Briefly disconnect/reconnect the network and verify recovery without duplicate peers.
+7. Click **Mute Microphone** in Window 1 and verify remote audio stops; click **Disconnect** and verify tracks and peer resources are released.
+
+The BroadcastChannel transport replies to a new tab's presence announcement so the newcomer also discovers users who were already connected. Peer negotiation is limited to users with a known position inside earshot.
 
 ---
 
@@ -223,12 +224,12 @@ Audio parameters are scheduled using `setTargetAtTime(target, currentTime, 0.05)
 All checks have been executed and verified locally:
 
 ```bash
-# 1. Run Unit Tests (21 passing)
+# 1. Run Unit and signaling integration tests (50 passing)
 npm test
 
-# 2. Run ESLint (0 errors, 0 warnings)
+# 2. Run ESLint
 npm run lint
 
-# 3. Production Vite Build (0 errors, 501ms)
+# 3. Production Vite Build
 npm run build
 ```
