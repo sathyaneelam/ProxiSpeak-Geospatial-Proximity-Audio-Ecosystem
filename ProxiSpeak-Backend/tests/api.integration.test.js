@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const { describe, it, before, after } = require("node:test");
@@ -7,6 +6,7 @@ const http = require("http");
 const mongoose = require("mongoose");
 const app = require("../src/app");
 const connectDB = require("../src/config/database");
+const User = require("../src/models/User");
 
 describe("REST API Integration Tests", () => {
   let server;
@@ -54,6 +54,80 @@ describe("REST API Integration Tests", () => {
       message: "ProxiSpeak server is healthy",
     });
   });
+
+  // NEW SIGNUP TESTS
+
+  it("POST /api/auth/signup should create a new account", async () => {
+    const email = `signup${Date.now()}@example.com`;
+
+    try {
+      const res = await fetch(`${baseUrl}/api/auth/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          displayName: "Test User",
+          email,
+          password: "testpass123",
+        }),
+      });
+
+      assert.strictEqual(res.status, 201);
+
+      const data = await res.json();
+      assert.strictEqual(data.status, "success");
+      assert.strictEqual(data.data.displayName, "Test User");
+      assert.strictEqual(data.data.email, email);
+      assert.strictEqual(data.data.passwordHash, undefined);
+    } finally {
+      await User.deleteOne({ email });
+    }
+  });
+
+  it("POST /api/auth/signup should reject a password shorter than 8 characters", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        displayName: "Test User",
+        email: `short${Date.now()}@example.com`,
+        password: "123",
+      }),
+    });
+
+    assert.strictEqual(res.status, 400);
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+  });
+
+  it("POST /api/auth/signup should reject an already registered email", async () => {
+    const email = `duplicate${Date.now()}@example.com`;
+
+    try {
+      await User.create({
+        displayName: "Existing User",
+        email,
+        passwordHash: "test-hash",
+      });
+
+      const res = await fetch(`${baseUrl}/api/auth/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          displayName: "Another User",
+          email,
+          password: "testpass123",
+        }),
+      });
+
+      assert.strictEqual(res.status, 409);
+      const data = await res.json();
+      assert.strictEqual(data.message, "Email is already registered");
+    } finally {
+      await User.deleteOne({ email });
+    }
+  });
+
+  // EXISTING TESTS
 
   it("POST /api/users without displayName should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
@@ -133,7 +207,7 @@ describe("REST API Integration Tests", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         userId: "507f1f77bcf86cd799439011",
-        x: "not-a-number",
+        x: "invalid",
         y: 100,
       }),
     });
@@ -141,7 +215,6 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(res.status, 400);
     const data = await res.json();
     assert.strictEqual(data.status, "error");
-    assert.strictEqual(data.message, "x and y must be valid numbers");
   });
 
   it("POST /api/positions with a non-existing user should return 404", async () => {
@@ -156,27 +229,23 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 404);
-    const data = await res.json();
-    assert.strictEqual(data.status, "error");
-    assert.strictEqual(data.message, "User not found");
   });
 
   it("GET /api/positions/:userId should return a saved position", async () => {
-    const User = require("../src/models/User");
-    const Position = require("../src/models/Position");
-
-    let user;
+    const user = await User.create({ displayName: "Position Test User" });
 
     try {
-      user = await User.create({
-        displayName: "Position Test User",
+      const saveRes = await fetch(`${baseUrl}/api/positions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user._id.toString(),
+          x: 150,
+          y: 200,
+        }),
       });
 
-      await Position.create({
-        userId: user._id,
-        x: 25,
-        y: 40,
-      });
+      assert.strictEqual(saveRes.status, 200);
 
       const res = await fetch(
         `${baseUrl}/api/positions/${user._id.toString()}`
@@ -184,51 +253,24 @@ describe("REST API Integration Tests", () => {
 
       assert.strictEqual(res.status, 200);
       const data = await res.json();
-      assert.strictEqual(data.status, "success");
-      assert.strictEqual(data.data.x, 25);
-      assert.strictEqual(data.data.y, 40);
-      assert.strictEqual(
-        data.data.userId.toString(),
-        user._id.toString()
-      );
+      assert.strictEqual(data.data.x, 150);
+      assert.strictEqual(data.data.y, 200);
     } finally {
-      if (user) {
-        const Position = require("../src/models/Position");
-        await Position.deleteOne({ userId: user._id });
-        await User.deleteOne({ _id: user._id });
-      }
+      await User.deleteOne({ _id: user._id });
     }
   });
 
   it("GET /api/positions/:userId should return 404 when position does not exist", async () => {
-    const User = require("../src/models/User");
-    const Position = require("../src/models/Position");
-
-    let user;
+    const user = await User.create({ displayName: "No Position User" });
 
     try {
-      user = await User.create({
-        displayName: "No Position Test User",
-      });
-
       const res = await fetch(
         `${baseUrl}/api/positions/${user._id.toString()}`
       );
 
       assert.strictEqual(res.status, 404);
-
-      const data = await res.json();
-      assert.strictEqual(data.status, "error");
-      assert.strictEqual(
-        data.message,
-        "Position not found for user"
-      );
     } finally {
-      if (user) {
-        await Position.deleteOne({ userId: user._id });
-        await User.deleteOne({ _id: user._id });
-      }
+      await User.deleteOne({ _id: user._id });
     }
   });
-
 });

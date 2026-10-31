@@ -5,6 +5,7 @@ const cors = require("cors");
 const userRoutes = require("./routes/userRoutes");
 const positionRoutes = require("./routes/positionRoutes");
 const officeRoutes = require("./routes/officeRoutes");
+const authRoutes = require("./routes/authRoutes");
 const errorHandler = require("./middleware/errorHandler");
 const validateJson = require("./middleware/validateJson");
 
@@ -33,6 +34,7 @@ app.get("/health", (req, res) => {
 app.use("/api/users", userRoutes);
 app.use("/api/positions", positionRoutes);
 app.use("/api/offices", officeRoutes);
+app.use("/api/auth", authRoutes); 
 
 app.use((req, res, next) => {
   const error = new Error("Route not found");
