@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import './MiniOfficeWelcome.css'
+import { createAuthApi } from './authApi.js'
+
+// Use Vite's same-origin /api proxy; avoid cross-origin cookie/CORS surprises.
+const signupApi = createAuthApi({ baseUrl: '' })
 
 const PALETTE = {
   ink: '#27334a',
@@ -490,10 +494,12 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
   const [values, setValues] = useState({ name: '', email: '', password: '', confirm: '' })
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [saving, setSaving] = useState(false)
   const [run, setRun] = useState(0)
   const [phase, setPhase] = useState('idle')
   const [mood, setMood] = useState('typing')
-  const busy = run > 0
+  const busy = run > 0 || saving
 
   const onProgress = useCallback((next) => setPhase(next), [])
   const onMoodChange = useCallback((next) => setMood(next), [])
@@ -502,9 +508,10 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
   function setValue(field, value) {
     setValues((previous) => ({ ...previous, [field]: value }))
     if (error) setError('')
+    if (notice) setNotice('')
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault()
     if (busy) return
     const issue = validate(values, mode)
@@ -512,11 +519,30 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
       setError(issue)
       return
     }
-    // Frontend-only visual sequence: does NOT create a user or authenticate.
-    // Connect to a real backend before routing to a protected office.
+    if (mode === 'login') {
+      setNotice('')
+      setError('Sign in is not available yet. The backend login and session endpoints are still being built.')
+      return
+    }
+
+    setSaving(true)
     setError('')
-    setPhase('jump')
-    setRun((number) => number + 1)
+    setNotice('')
+    try {
+      await signupApi.signup({
+        displayName: values.name.trim(),
+        email: values.email.trim(),
+        password: values.password,
+      })
+      // Signup creates an account but does NOT authenticate or create a session.
+      setValues((previous) => ({ ...previous, password: '', confirm: '' }))
+      setMode('login')
+      setNotice('Account created successfully! Sign-in will be enabled when the backend login API is ready.')
+    } catch (error) {
+      setError(error?.message || 'Unable to create account. Please try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -549,8 +575,8 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
             <h2>{mode === 'signup' ? 'Create your space.' : 'Welcome back.'}</h2>
             <p className="mow-card-subtitle">{mode === 'signup' ? 'A simple beginning to better team conversations.' : 'Your teammates are one small step away.'}</p>
             <div className="mow-segments" aria-label="Account screen">
-              <button type="button" className={mode === 'signup' ? 'selected' : ''} onClick={() => { if (!busy) { setMode('signup'); setError('') } }} disabled={busy}>Sign up</button>
-              <button type="button" className={mode === 'login' ? 'selected' : ''} onClick={() => { if (!busy) { setMode('login'); setError('') } }} disabled={busy}>Sign in</button>
+              <button type="button" className={mode === 'signup' ? 'selected' : ''} onClick={() => { if (!busy) { setMode('signup'); setError(''); setNotice('') } }} disabled={busy}>Sign up</button>
+              <button type="button" className={mode === 'login' ? 'selected' : ''} onClick={() => { if (!busy) { setMode('login'); setError(''); setNotice('') } }} disabled={busy}>Sign in</button>
             </div>
             <form className="mow-form" onSubmit={submit} noValidate>
               {mode === 'signup' && (
@@ -573,12 +599,13 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
                 </label>
               )}
               {error && <div className="mow-error" role="alert">{error}</div>}
+              {notice && <div className="mow-success" role="status">{notice}</div>}
               <button type="submit" className="mow-submit" disabled={busy}>
-                <span>{busy ? 'Your tiny teammate is on his way...' : mode === 'signup' ? 'Create account' : 'Sign in'}</span>
+                <span>{busy ? 'Creating your account...' : mode === 'signup' ? 'Create account' : 'Sign in'}</span>
                 {!busy && <span aria-hidden="true">↗</span>}
               </button>
             </form>
-            <p className="mow-preview-note"><span className="mow-status-dot" /> Interactive design preview. No account is created or authenticated yet.</p>
+            <p className="mow-preview-note"><span className="mow-status-dot" /> Account creation uses the backend API. Sign-in and sessions are not enabled yet.</p>
           </div>
           <div className="mow-bottom-caption">Made for teams that feel closer, even from afar.</div>
         </section>

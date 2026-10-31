@@ -47,6 +47,7 @@ button { cursor: pointer; }
 .mow-submit:disabled { cursor:default; opacity:.73; }
 .mow-submit span:last-child { font-size:19px; font-weight:400; }
 .mow-error { border-radius: 8px; background:#fff4f0; color:#a3543c; font-size:12px; padding:10px 12px; line-height:1.5; }
+.mow-success { border-radius: 8px; background:#edf7f0; color:#2e6847; font-size:12px; padding:10px 12px; line-height:1.5; }
 .mow-preview-note { display:flex; align-items:flex-start; gap:7px; color:#9ba39d; font-size:10px; line-height:1.6; margin:22px 0 0; }
 .mow-status-dot { width:6px;height:6px;flex:0 0 auto;margin-top:5px;border-radius:50%;background:#aab9ad; }
 .mow-bottom-caption { text-align:center; color:#a1aaa2; font-size:11px; letter-spacing:.01em; }
