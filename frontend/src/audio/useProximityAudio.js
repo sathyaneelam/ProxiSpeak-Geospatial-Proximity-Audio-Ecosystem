@@ -12,6 +12,9 @@ import { SpatialAudioGraph } from './SpatialAudioGraph.js';
 import { WebRTCPeerManager } from './webrtcPeerManager.js';
 import { SocketIOSignalingTransport, BroadcastSignalingTransport } from './signalingAdapter.js';
 
+const getToneSimulationPeerId = (peer) =>
+  `sim_${peer.id || peer.name || 'peer'}`;
+
 export function useProximityAudio({
   userId = 'user_local',
   officeId = 'office_main',
@@ -34,6 +37,29 @@ export function useProximityAudio({
   const peerManagerRef = useRef(null);
   const signalingRef = useRef(null);
   const toneOscillatorRef = useRef(null);
+  const toneSimulationPeerIdRef = useRef(null);
+  const toneSimulationRequestRef = useRef(0);
+
+  const stopToneSimulation = useCallback(() => {
+    toneSimulationRequestRef.current += 1;
+
+    if (toneOscillatorRef.current) {
+      try {
+        toneOscillatorRef.current.stop();
+        toneOscillatorRef.current.disconnect();
+      } catch {
+        // Ignore
+      }
+      toneOscillatorRef.current = null;
+    }
+
+    if (toneSimulationPeerIdRef.current) {
+      spatialGraphRef.current?.removePeer(toneSimulationPeerIdRef.current);
+      toneSimulationPeerIdRef.current = null;
+    }
+
+    setIsToneSimulationActive(false);
+  }, []);
 
   // Initialize managers on mount and cleanup on unmount
   useEffect(() => {
@@ -41,20 +67,13 @@ export function useProximityAudio({
     spatialGraphRef.current = new SpatialAudioGraph();
 
     return () => {
-      if (toneOscillatorRef.current) {
-        try {
-          toneOscillatorRef.current.stop();
-          toneOscillatorRef.current.disconnect();
-        } catch {
-          // Ignore
-        }
-      }
+      stopToneSimulation();
       mediaManagerRef.current?.stopStream();
       spatialGraphRef.current?.destroy();
       peerManagerRef.current?.destroy();
       signalingRef.current?.disconnect();
     };
-  }, []);
+  }, [stopToneSimulation]);
 
   /**
    * Initializes signaling and WebRTC managers
@@ -155,6 +174,7 @@ export function useProximityAudio({
    * Stops audio and tears down peer connections
    */
   const stopAudio = useCallback(() => {
+    stopToneSimulation();
     mediaManagerRef.current.stopStream();
     peerManagerRef.current?.destroy();
     spatialGraphRef.current?.destroy();
@@ -164,23 +184,12 @@ export function useProximityAudio({
     spatialGraphRef.current = new SpatialAudioGraph();
     signalingRef.current = null;
 
-    if (toneOscillatorRef.current) {
-      try {
-        toneOscillatorRef.current.stop();
-        toneOscillatorRef.current.disconnect();
-      } catch {
-        // Ignore
-      }
-      toneOscillatorRef.current = null;
-      setIsToneSimulationActive(false);
-    }
-
     setIsAudioActive(false);
     setIsMuted(false);
     setAudioContextReady(false);
     setAudioState('idle');
     setPeerMetrics({});
-  }, []);
+  }, [stopToneSimulation]);
 
   /**
    * Mute / Unmute local microphone
@@ -197,29 +206,34 @@ export function useProximityAudio({
    * can test spatial stereo panning and smooth distance attenuation immediately.
    */
   const toggleToneSimulation = useCallback(async (targetPeer = peers[0]) => {
+    const targetSimulationPeerId = targetPeer
+      ? getToneSimulationPeerId(targetPeer)
+      : null;
+
+    if (isToneSimulationActive) {
+      if (!targetSimulationPeerId || toneSimulationPeerIdRef.current === targetSimulationPeerId) {
+        stopToneSimulation();
+        return;
+      }
+
+      stopToneSimulation();
+    }
+
     if (!targetPeer) return;
 
-    if (isToneSimulationActive && toneOscillatorRef.current) {
-      try {
-        toneOscillatorRef.current.stop();
-        toneOscillatorRef.current.disconnect();
-      } catch {
-        // Ignore
-      }
-      toneOscillatorRef.current = null;
-      setIsToneSimulationActive(false);
-      spatialGraphRef.current.removePeer(`sim_${targetPeer.name || 'peer'}`);
-      return;
-    }
+    const requestId = ++toneSimulationRequestRef.current;
 
     try {
       await spatialGraphRef.current.resumeContext();
+      if (requestId !== toneSimulationRequestRef.current) return;
+
       setAudioContextReady(true);
 
       const ctx = spatialGraphRef.current.getAudioContext();
 
       // Create a pleasant synthetic voice drone (soft pentatonic warm chime)
       const osc = ctx.createOscillator();
+      toneOscillatorRef.current = osc;
       const oscGain = ctx.createGain();
       osc.type = 'sine';
       osc.frequency.setValueAtTime(329.63, ctx.currentTime); // Note E4
@@ -231,9 +245,16 @@ export function useProximityAudio({
       const dest = ctx.createMediaStreamDestination();
       oscGain.connect(dest);
 
-      const simPeerId = `sim_${targetPeer.name || 'peer'}`;
+      if (requestId !== toneSimulationRequestRef.current) {
+        osc.stop();
+        osc.disconnect();
+        return;
+      }
+
+      const simulationPeerId = getToneSimulationPeerId(targetPeer);
+      toneSimulationPeerIdRef.current = simulationPeerId;
       spatialGraphRef.current.addPeerStream(
-        simPeerId,
+        simulationPeerId,
         dest.stream,
         { x: targetPeer.x, y: targetPeer.y },
         localPosition,
@@ -241,12 +262,14 @@ export function useProximityAudio({
       );
 
       osc.start();
-      toneOscillatorRef.current = osc;
       setIsToneSimulationActive(true);
     } catch (err) {
-      console.error('Tone simulation failed:', err);
+      if (requestId === toneSimulationRequestRef.current) {
+        stopToneSimulation();
+        console.error('Tone simulation failed:', err);
+      }
     }
-  }, [isToneSimulationActive, peers, localPosition, earshotRadius]);
+  }, [isToneSimulationActive, peers, localPosition, earshotRadius, stopToneSimulation]);
 
   /**
    * Proximity evaluation and spatial parameter update loop
@@ -281,10 +304,14 @@ export function useProximityAudio({
         earshotRadius
       );
 
-      // Also update tone simulation if active
-      if (isToneSimulationActive && toneOscillatorRef.current) {
+      const simulationPeerId = getToneSimulationPeerId(peer);
+      if (
+        isToneSimulationActive &&
+        toneOscillatorRef.current &&
+        toneSimulationPeerIdRef.current === simulationPeerId
+      ) {
         spatialGraphRef.current?.updatePeerSpatial(
-          `sim_${peerId}`,
+          simulationPeerId,
           { x: peer.x, y: peer.y },
           localPosition,
           earshotRadius
@@ -317,8 +344,18 @@ export function useProximityAudio({
       };
     });
 
+    if (
+      isToneSimulationActive &&
+      toneOscillatorRef.current &&
+      !peers.some((peer) =>
+        getToneSimulationPeerId(peer) === toneSimulationPeerIdRef.current
+      )
+    ) {
+      stopToneSimulation();
+    }
+
     setPeerMetrics(nextMetrics);
-  }, [localPosition, peers, earshotRadius, isAudioActive, isToneSimulationActive]);
+  }, [localPosition, peers, earshotRadius, isAudioActive, isToneSimulationActive, stopToneSimulation]);
 
   return {
     isAudioActive,
