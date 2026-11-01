@@ -15,13 +15,16 @@ async function signup(req, res, next) {
     ) {
       return res.status(400).json({
         status: "error",
-        message: "Display name, valid email and password of at least 8 characters are required",
+        message:
+          "Display name, valid email and password of at least 8 characters are required",
       });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    const existingUser = await User.findOne({ email: normalizedEmail });
+    const existingUser = await User.findOne({
+      email: normalizedEmail,
+    });
 
     if (existingUser) {
       return res.status(409).json({
@@ -59,4 +62,60 @@ async function signup(req, res, next) {
   }
 }
 
-module.exports = { signup };
+// LOGIN API
+async function login(req, res, next) {
+  try {
+    const { email, password } = req.body;
+
+    if (
+      typeof email !== "string" ||
+      !email.trim() ||
+      typeof password !== "string" ||
+      !password
+    ) {
+      return res.status(400).json({
+        status: "error",
+        message: "Email and password are required",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const user = await User.findOne({
+      email: normalizedEmail,
+    }).select("+passwordHash");
+
+    if (!user) {
+      return res.status(401).json({
+        status: "error",
+        message: "Invalid email or password",
+      });
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      password,
+      user.passwordHash
+    );
+
+    if (!passwordMatches) {
+      return res.status(401).json({
+        status: "error",
+        message: "Invalid email or password",
+      });
+    }
+
+    return res.status(200).json({
+      status: "success",
+      message: "Login successful",
+      data: {
+        id: user._id,
+        displayName: user.displayName,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = { signup, login };

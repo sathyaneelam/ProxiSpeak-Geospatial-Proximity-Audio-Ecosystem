@@ -4,6 +4,8 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const http = require("http");
 const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+
 const app = require("../src/app");
 const connectDB = require("../src/config/database");
 const User = require("../src/models/User");
@@ -55,7 +57,7 @@ describe("REST API Integration Tests", () => {
     });
   });
 
-  // NEW SIGNUP TESTS
+  // SIGNUP TESTS
 
   it("POST /api/auth/signup should create a new account", async () => {
     const email = `signup${Date.now()}@example.com`;
@@ -120,6 +122,7 @@ describe("REST API Integration Tests", () => {
       });
 
       assert.strictEqual(res.status, 409);
+
       const data = await res.json();
       assert.strictEqual(data.message, "Email is already registered");
     } finally {
@@ -127,7 +130,71 @@ describe("REST API Integration Tests", () => {
     }
   });
 
-  // EXISTING TESTS
+  // LOGIN TESTS
+
+  it("POST /api/auth/login should log in with correct credentials", async () => {
+    const email = `login${Date.now()}@example.com`;
+    const password = "testpass123";
+
+    try {
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      await User.create({
+        displayName: "Login Test User",
+        email,
+        passwordHash,
+      });
+
+      const res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      assert.strictEqual(res.status, 200);
+
+      const data = await res.json();
+      assert.strictEqual(data.status, "success");
+      assert.strictEqual(data.message, "Login successful");
+      assert.strictEqual(data.data.email, email);
+      assert.strictEqual(data.data.passwordHash, undefined);
+    } finally {
+      await User.deleteOne({ email });
+    }
+  });
+
+  it("POST /api/auth/login should reject an incorrect password", async () => {
+    const email = `wrong${Date.now()}@example.com`;
+
+    try {
+      const passwordHash = await bcrypt.hash("correctpass123", 12);
+
+      await User.create({
+        displayName: "Login Test User",
+        email,
+        passwordHash,
+      });
+
+      const res = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          password: "wrongpass123",
+        }),
+      });
+
+      assert.strictEqual(res.status, 401);
+
+      const data = await res.json();
+      assert.strictEqual(data.status, "error");
+      assert.strictEqual(data.message, "Invalid email or password");
+    } finally {
+      await User.deleteOne({ email });
+    }
+  });
+
+  // EXISTING API TESTS
 
   it("POST /api/users without displayName should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/users`, {
@@ -137,6 +204,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "displayName is required");
@@ -150,6 +218,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "Office name is required");
@@ -167,6 +236,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
     assert.strictEqual(data.status, "error");
   });
@@ -179,8 +249,8 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 415);
-    const data = await res.json();
 
+    const data = await res.json();
     assert.deepStrictEqual(data, {
       status: "error",
       message: "Content-Type must be application/json",
@@ -213,6 +283,7 @@ describe("REST API Integration Tests", () => {
     });
 
     assert.strictEqual(res.status, 400);
+
     const data = await res.json();
     assert.strictEqual(data.status, "error");
   });
@@ -232,7 +303,9 @@ describe("REST API Integration Tests", () => {
   });
 
   it("GET /api/positions/:userId should return a saved position", async () => {
-    const user = await User.create({ displayName: "Position Test User" });
+    const user = await User.create({
+      displayName: "Position Test User",
+    });
 
     try {
       const saveRes = await fetch(`${baseUrl}/api/positions`, {
@@ -252,6 +325,7 @@ describe("REST API Integration Tests", () => {
       );
 
       assert.strictEqual(res.status, 200);
+
       const data = await res.json();
       assert.strictEqual(data.data.x, 150);
       assert.strictEqual(data.data.y, 200);
@@ -261,7 +335,9 @@ describe("REST API Integration Tests", () => {
   });
 
   it("GET /api/positions/:userId should return 404 when position does not exist", async () => {
-    const user = await User.create({ displayName: "No Position User" });
+    const user = await User.create({
+      displayName: "No Position User",
+    });
 
     try {
       const res = await fetch(
