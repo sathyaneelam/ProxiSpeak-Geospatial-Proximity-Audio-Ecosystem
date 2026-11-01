@@ -519,25 +519,33 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
       setError(issue)
       return
     }
-    if (mode === 'login') {
-      setNotice('')
-      setError('Sign in is not available yet. The backend login and session endpoints are still being built.')
-      return
-    }
-
     setSaving(true)
     setError('')
     setNotice('')
     try {
-      await signupApi.signup({
-        displayName: values.name.trim(),
-        email: values.email.trim(),
-        password: values.password,
-      })
-      // Signup creates an account but does NOT authenticate or create a session.
-      setValues((previous) => ({ ...previous, password: '', confirm: '' }))
-      setMode('login')
-      setNotice('Account created successfully! Sign-in will be enabled when the backend login API is ready.')
+      if (mode === 'login') {
+        // Current backend verifies the password but does NOT issue a session.
+        // Do not enter a protected office or store credentials in localStorage.
+        const result = await signupApi.login({
+          email: values.email.trim(),
+          password: values.password,
+        })
+        if (result?.status !== 'success' || !result?.data?.id) {
+          throw new Error('Unexpected login response from the backend.')
+        }
+        setValues((previous) => ({ ...previous, password: '', confirm: '' }))
+        setNotice('Credentials verified! Secure sessions and office access are still being integrated.')
+      } else {
+        await signupApi.signup({
+          displayName: values.name.trim(),
+          email: values.email.trim(),
+          password: values.password,
+        })
+        // Signup creates an account but does NOT authenticate or create a session.
+        setValues((previous) => ({ ...previous, password: '', confirm: '' }))
+        setMode('login')
+        setNotice('Account created. Sign in to verify credentials; persistent sessions are not enabled yet.')
+      }
     } catch (error) {
       setError(error?.message || 'Unable to create account. Please try again.')
     } finally {
@@ -601,11 +609,11 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
               {error && <div className="mow-error" role="alert">{error}</div>}
               {notice && <div className="mow-success" role="status">{notice}</div>}
               <button type="submit" className="mow-submit" disabled={busy}>
-                <span>{busy ? 'Creating your account...' : mode === 'signup' ? 'Create account' : 'Sign in'}</span>
+                <span>{busy ? (mode === 'signup' ? 'Creating your account...' : 'Verifying credentials...') : mode === 'signup' ? 'Create account' : 'Verify credentials'}</span>
                 {!busy && <span aria-hidden="true">↗</span>}
               </button>
             </form>
-            <p className="mow-preview-note"><span className="mow-status-dot" /> Account creation uses the backend API. Sign-in and sessions are not enabled yet.</p>
+            <p className="mow-preview-note"><span className="mow-status-dot" /> Account creation and password verification use the backend API. Secure sessions and protected access are not enabled yet.</p>
           </div>
           <div className="mow-bottom-caption">Made for teams that feel closer, even from afar.</div>
         </section>
