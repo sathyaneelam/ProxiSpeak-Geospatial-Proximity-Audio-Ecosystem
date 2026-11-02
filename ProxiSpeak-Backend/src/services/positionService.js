@@ -269,6 +269,10 @@ async function updatePosition(userId, location, options = {}) {
     }
   }
 
+  if (targetOfficeId && typeof targetOfficeId !== 'string' && !(targetOfficeId instanceof mongoose.Types.ObjectId)) {
+    throw new Error('officeId must be a valid ObjectId or string');
+  }
+
   if (officeDimensions) {
     validatePositionInOffice(validLocation, officeDimensions);
   }
@@ -501,8 +505,34 @@ async function removeUserPosition(userId) {
  * @returns {Promise<Document|null>}
  */
 async function removeBySocketId(socketId) {
-  if (!socketId) return null;
+  if (!socketId || typeof socketId !== 'string') return null;
   return await LivePosition.findOneAndDelete({ socketId });
+}
+
+/**
+ * Remove stale live position records that have not been updated within a specified time window.
+ * Useful for reaping orphaned or disconnected avatar positions during health checks and maintenance sweeps.
+ *
+ * @param {number} [maxAgeMs=300000] - Cutoff age in milliseconds (default: 300,000 ms / 5 minutes)
+ * @param {string|mongoose.Types.ObjectId} [officeId] - Optional office ID to scope cleanup
+ * @returns {Promise<{ deletedCount: number }>}
+ */
+async function removeStalePositions(maxAgeMs = 300000, officeId = null) {
+  if (typeof maxAgeMs !== 'number' || maxAgeMs <= 0 || isNaN(maxAgeMs) || !isFinite(maxAgeMs)) {
+    throw new Error('maxAgeMs must be a positive finite number');
+  }
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const filter = {
+    lastUpdated: { $lt: cutoff }
+  };
+  if (officeId) {
+    if (typeof officeId !== 'string' && !(officeId instanceof mongoose.Types.ObjectId)) {
+      throw new Error('officeId must be a valid ObjectId or string');
+    }
+    filter.officeId = officeId;
+  }
+  const res = await LivePosition.deleteMany(filter);
+  return { deletedCount: res?.deletedCount || 0 };
 }
 
 module.exports = {
@@ -521,7 +551,8 @@ module.exports = {
   getNearbyUsers,
   getOfficePositions,
   removeUserPosition,
-  removeBySocketId
+  removeBySocketId,
+  removeStalePositions
 };
 
 

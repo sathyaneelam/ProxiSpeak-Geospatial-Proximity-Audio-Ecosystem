@@ -534,6 +534,32 @@ Evaluated across varying active avatar densities on the $1000 \times 600$ canvas
 | `updatePosition` | `{ userId }` | `{ userId: 1 }` (unique) | `IXSCAN` | Zero |
 | `removeUserPosition` | `{ userId }` | `{ userId: 1 }` (unique) | `IXSCAN` | Zero |
 | `removeBySocketId` | `{ socketId }` | `{ socketId: 1 }` | `IXSCAN` | Zero |
+| `removeStalePositions` | `{ lastUpdated: { $lt: cutoff } }` | Filter range scan / optional `{ officeId: 1 }` | `COLLSCAN` / `IXSCAN` | Bounded |
+
+---
+
+### 3.11 Database Integration Hardening, Data Consistency & Stale Record Reaping (Day 14)
+
+Day 14 hardening reinforces data consistency invariants, concurrency race condition recovery, and stale record lifecycle management across all database operations.
+
+#### 1. User-to-LivePosition 1:1 Invariant
+- **Schema-Enforced Uniqueness:** The `userId` field enforces `unique: true` at the MongoDB index layer (`{ userId: 1 }`).
+- **Atomic Concurrency Recovery:** In high-concurrency connection spikes where multiple `upsertPosition` calls execute concurrently for the same user before a document exists, MongoDB returns an `E11000` duplicate key error on the second insert. The service catches `err.code === 11000` and transparently recovers by updating the existing record in-place, guaranteeing that each user maintains strictly one active `LivePosition` document.
+- **In-Place Trajectory Updates:** During continuous avatar movement, `updatePosition` mutates the single existing document without reallocating documents or fragmenting storage. Redundant database writes are suppressed when coordinates are stationary.
+
+#### 2. Atomic Office Migration & Zero Cross-Room Audio Leakage
+- **Atomic Partition Migration:** When an avatar switches rooms (`updatePosition(userId, coords, { officeId: targetOfficeId })`), `officeId`, `location`, and `lastUpdated` are updated atomically in-place.
+- **Immediate Spatial Cutoff:** Spatial proximity queries (`getNearbyUsers`) in the former office immediately cease returning the avatar, while queries in the target office immediately detect the avatar without requiring cache invalidation or creating intermediate states.
+
+#### 3. Parameter Validation & Defensive Error Boundaries
+- **Strict Identifier Validation:** `upsertPosition`, `updatePosition`, `getNearbyUsers`, and `getOfficePositions` validate that `userId` and `officeId` are valid ObjectId instances or non-empty strings, throwing descriptive validation errors before any database communication occurs.
+- **Defensive Type Guards:** `getUserPosition`, `removeUserPosition`, and `removeBySocketId` guard against null, undefined, or non-string inputs, returning `null` safely without issuing malformed queries to the database engine.
+- **Coordinate Integrity:** Screen pixel coordinates are validated as 2-element arrays of finite, non-negative numbers before Mongoose schema evaluation. Optional `{ validateBounds: true }` verifies room dimensions.
+
+#### 4. Stale Position Reaping (`removeStalePositions`)
+- **Lifecycle Management:** Disconnected or crashed client sessions that bypass the clean Socket.io `disconnect` event can leave orphaned position documents.
+- **Configurable Cutoff Window:** `removeStalePositions(maxAgeMs, [officeId])` reaps all position records whose `lastUpdated` timestamp is older than the configured threshold (default: 5 minutes / 300,000ms).
+- **Office Scoping:** Supports optional `officeId` scoping to prune stale avatars in specific virtual rooms without affecting other active offices.
 
 ---
 
