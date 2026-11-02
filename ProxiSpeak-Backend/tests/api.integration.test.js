@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const { describe, it, before, after } = require("node:test");
@@ -25,12 +26,24 @@ describe("REST API Integration Tests", () => {
   });
 
   after(async () => {
-    if (server) {
-      await new Promise((resolve) => server.close(resolve));
-    }
+  if (server) {
+    const closePromise = new Promise((resolve) => {
+      server.close(resolve);
+    });
 
-    await mongoose.disconnect();
-  });
+    server.closeIdleConnections?.();
+    server.closeAllConnections?.();
+
+    await closePromise;
+  }
+
+  if (app.locals.sessionStore) {
+    await app.locals.sessionStore.close();
+  }
+
+  await mongoose.disconnect();
+});
+  // BASIC API TESTS
 
   it("GET / should return 200 and project info", async () => {
     const res = await fetch(`${baseUrl}/`);
@@ -189,6 +202,82 @@ describe("REST API Integration Tests", () => {
       const data = await res.json();
       assert.strictEqual(data.status, "error");
       assert.strictEqual(data.message, "Invalid email or password");
+    } finally {
+      await User.deleteOne({ email });
+    }
+  });
+
+  // SESSION TESTS
+
+  it("GET /api/auth/me should reject requests without a login session", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/me`);
+
+    assert.strictEqual(res.status, 401);
+
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "Authentication required");
+  });
+
+  it("should create, verify and destroy a login session", async () => {
+    const email = `session${Date.now()}@example.com`;
+    const password = "testpass123";
+
+    try {
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      await User.create({
+        displayName: "Session Test User",
+        email,
+        passwordHash,
+      });
+
+      // Login
+      const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      assert.strictEqual(loginRes.status, 200);
+
+      const cookieHeader = loginRes.headers.get("set-cookie");
+      assert.ok(cookieHeader, "Login should return a session cookie");
+
+      const sessionCookie = cookieHeader.split(";")[0];
+
+      // Verify session
+      const meRes = await fetch(`${baseUrl}/api/auth/me`, {
+        headers: { Cookie: sessionCookie },
+      });
+
+      assert.strictEqual(meRes.status, 200);
+
+      const meData = await meRes.json();
+      assert.strictEqual(meData.data.email, email);
+      assert.strictEqual(
+        meData.data.displayName,
+        "Session Test User"
+      );
+
+      // Logout
+      const logoutRes = await fetch(`${baseUrl}/api/auth/logout`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: sessionCookie,
+        },
+        body: JSON.stringify({}),
+      });
+
+      assert.strictEqual(logoutRes.status, 200);
+
+      // Verify old session is rejected
+      const afterLogoutRes = await fetch(`${baseUrl}/api/auth/me`, {
+        headers: { Cookie: sessionCookie },
+      });
+
+      assert.strictEqual(afterLogoutRes.status, 401);
     } finally {
       await User.deleteOne({ email });
     }
