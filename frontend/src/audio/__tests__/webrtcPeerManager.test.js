@@ -58,6 +58,7 @@ const waitFor = async (predicate, timeout = 500) => {
 class MockRTCPeerConnection {
   constructor() {
     this.connectionState = 'new';
+    this.iceConnectionState = 'new';
     this.signalingState = 'stable';
     this.remoteDescription = null;
     this.localDescription = null;
@@ -66,7 +67,10 @@ class MockRTCPeerConnection {
     this.onicecandidate = null;
     this.ontrack = null;
     this.onconnectionstatechange = null;
+    this.oniceconnectionstatechange = null;
     this.addedIceCandidates = [];
+    this.remoteDescriptionCalls = 0;
+    this.answerCalls = 0;
   }
 
   getSenders() {
@@ -82,6 +86,7 @@ class MockRTCPeerConnection {
   }
 
   createAnswer() {
+    this.answerCalls += 1;
     return Promise.resolve({ type: 'answer', sdp: 'mock-answer-sdp' });
   }
 
@@ -93,6 +98,7 @@ class MockRTCPeerConnection {
   }
 
   setRemoteDescription(desc) {
+    this.remoteDescriptionCalls += 1;
     this.remoteDescription = desc;
     this.signalingState =
       desc.type === 'offer' ? 'have-remote-offer' : 'stable';
@@ -270,6 +276,71 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     const session2 = manager.getOrCreatePeer('remote-1');
     assert.equal(session1, session2, 'Must return the existing active peer session');
     assert.equal(manager.peers.size, 1);
+    assert.equal(manager.getOrCreatePeer('  '), null);
+    assert.equal(manager.getOrCreatePeer('local-1'), null);
+    assert.equal(manager.peers.size, 1);
+  });
+
+  test('ignores malformed and misrouted signaling events without creating peers', async () => {
+    const transport = new MockSignalingTransport('local');
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local',
+      officeId: 'office',
+      signalingTransport: transport,
+    });
+
+    transport.emit('webrtc:offer', {
+      fromUserId: '',
+      toUserId: 'local',
+      sdp: { type: 'offer', sdp: 'offer' },
+    });
+    transport.emit('webrtc:offer', {
+      fromUserId: 'remote',
+      toUserId: 'another-user',
+      officeId: 'office',
+      sdp: { type: 'offer', sdp: 'offer' },
+    });
+    transport.emit('webrtc:answer', {
+      fromUserId: 'remote',
+      officeId: 'office',
+      sdp: { type: 'offer', sdp: 'wrong-type' },
+    });
+    await manager.handleRemoteOffer('', { type: 'offer', sdp: 'offer' });
+    await manager.handleRemoteAnswer('remote', { type: 'offer', sdp: 'offer' });
+
+    assert.equal(manager.peers.size, 0);
+    manager.destroy();
+  });
+
+  test('deduplicates concurrent and repeated remote offers and ICE candidates', async () => {
+    const transport = new MockSignalingTransport('local');
+    const manager = new WebRTCPeerManager({
+      localUserId: 'z-local',
+      signalingTransport: transport,
+    });
+
+    try {
+      const offer = { type: 'offer', sdp: 'unique-remote-offer' };
+      const renegotiation = { type: 'offer', sdp: 'next-remote-offer' };
+      await Promise.all([
+        manager.handleRemoteOffer('a-remote', offer),
+        manager.handleRemoteOffer('a-remote', offer),
+        manager.handleRemoteOffer('a-remote', renegotiation),
+        manager.handleRemoteOffer('a-remote', renegotiation),
+      ]);
+      await manager.handleRemoteOffer('a-remote', offer);
+      await waitFor(() => manager.peers.get('a-remote')?.pc.answerCalls === 2);
+      const session = manager.peers.get('a-remote');
+      assert.equal(session.pc.answerCalls, 2);
+      assert.equal(transport.sentAnswers.length, 2);
+
+      const candidate = { candidate: 'candidate:unique', sdpMid: '0', sdpMLineIndex: 0 };
+      await manager.handleRemoteIceCandidate('a-remote', candidate);
+      await manager.handleRemoteIceCandidate('a-remote', candidate);
+      assert.equal(session.pc.addedIceCandidates.length, 1);
+    } finally {
+      manager.destroy();
+    }
   });
 
   test('exchanges offer, answer, and ICE candidates between two peer managers', async () => {
@@ -369,6 +440,69 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     assert.deepEqual(reportedStates, [{ peerId: 'remote-1', state: 'connected' }]);
   });
 
+  test('isolates a failed peer and callback exceptions from other connections', async () => {
+    const originalConsoleError = console.error;
+    console.error = () => {};
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [5],
+      onPeerConnectionState() {
+        throw new Error('consumer callback failed');
+      },
+    });
+    const failedSession = manager.getOrCreatePeer('remote-failing');
+    const healthySession = manager.getOrCreatePeer('remote-healthy');
+
+    try {
+      failedSession.pc.connectionState = 'failed';
+      failedSession.pc.onconnectionstatechange();
+      await waitFor(() => manager.peers.get('remote-failing') !== failedSession);
+
+      assert.notEqual(manager.peers.get('remote-failing'), failedSession);
+      assert.equal(manager.peers.get('remote-healthy'), healthySession);
+      assert.equal(healthySession.pc.connectionState, 'new');
+    } finally {
+      manager.destroy();
+      console.error = originalConsoleError;
+    }
+  });
+
+  test('retries when ICE fails even if the aggregate connection state has not changed', async () => {
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [5],
+    });
+    const session = manager.getOrCreatePeer('remote-ice-failed');
+
+    try {
+      session.pc.iceConnectionState = 'failed';
+      session.pc.oniceconnectionstatechange();
+      await waitFor(() => manager.peers.get('remote-ice-failed') !== session);
+      assert.notEqual(manager.peers.get('remote-ice-failed'), session);
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  test('recovers when ICE remains disconnected while the aggregate state is connecting', async () => {
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [5],
+      disconnectGracePeriod: 5,
+    });
+    const session = manager.getOrCreatePeer('remote-ice-disconnected');
+
+    try {
+      session.pc.connectionState = 'connecting';
+      session.pc.iceConnectionState = 'disconnected';
+      session.pc.oniceconnectionstatechange();
+      await waitFor(() => manager.peers.get('remote-ice-disconnected') !== session);
+      assert.notEqual(manager.peers.get('remote-ice-disconnected'), session);
+    } finally {
+      manager.destroy();
+    }
+  });
+
   test('retries failed peers with one bounded reconnection attempt', async () => {
     const manager = new WebRTCPeerManager({
       localUserId: 'local-1',
@@ -455,6 +589,11 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     manager.closePeer('remote-3');
     assert.equal(manager.peers.has('remote-3'), false);
     assert.equal(session.pc.connectionState, 'closed');
+    assert.equal(session.pc.ontrack, null);
+    assert.equal(session.pc.onicecandidate, null);
+    assert.equal(session.pc.oniceconnectionstatechange, null);
+    assert.equal(session.iceCandidateBuffer.length, 0);
+    assert.equal(session.seenRemoteCandidates.size, 0);
 
     manager.getOrCreatePeer('remote-4');
     manager.getOrCreatePeer('remote-5');

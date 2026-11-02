@@ -11,9 +11,23 @@ import {
   createOfferPayload,
   createAnswerPayload,
   createIceCandidatePayload,
+  isValidPeerPresencePayload,
+  isValidPosition,
   isValidSdpPayload,
   isValidIceCandidatePayload,
+  isValidUserId,
+  normalizeIceCandidatePayload,
+  normalizeSdpPayload,
 } from './signalingContract.js';
+
+function isMessageForUser(payload, userId) {
+  for (const recipient of [payload.toUserId, payload.to]) {
+    if (recipient !== undefined && (!isValidUserId(recipient) || recipient.trim() !== userId)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export class BaseSignalingTransport {
   constructor() {
@@ -30,7 +44,9 @@ export class BaseSignalingTransport {
 
   off(event, handler) {
     if (this.listeners.has(event)) {
-      this.listeners.get(event).delete(handler);
+      const handlers = this.listeners.get(event);
+      handlers.delete(handler);
+      if (handlers.size === 0) this.listeners.delete(event);
     }
   }
 
@@ -45,6 +61,32 @@ export class BaseSignalingTransport {
         }
       }
     }
+  }
+
+  _emitValidSignalingPayload(event, payload) {
+    if (
+      !payload ||
+      payload.toUserId !== this.userId ||
+      payload.fromUserId === this.userId ||
+      (payload.officeId && payload.officeId !== this.officeId)
+    ) {
+      console.warn(`[SignalingTransport] Ignoring invalid or misrouted ${event} payload.`);
+      return;
+    }
+    this.emitLocal(event, payload);
+  }
+
+  _emitValidPresencePayload(event, payload) {
+    if (
+      !isValidPeerPresencePayload(payload) ||
+      payload.userId === this.userId ||
+      !isMessageForUser(payload, this.userId) ||
+      (payload.officeId && payload.officeId !== this.officeId)
+    ) {
+      console.warn(`[SignalingTransport] Ignoring invalid or misrouted ${event} payload.`);
+      return;
+    }
+    this.emitLocal(event, payload);
   }
 
   // Abstract methods
@@ -75,11 +117,26 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
     this.userId = null;
     this.officeId = null;
     this.position = null;
+    this.socketHandlers = [];
+    this.hasJoinedVoice = false;
   }
 
   async connect({ userId, officeId, position }) {
-    this.userId = userId;
-    this.officeId = officeId;
+    if (
+      !isValidUserId(userId) ||
+      !isValidUserId(officeId) ||
+      (position !== undefined && !isValidPeerPresencePayload({ userId, officeId, position }))
+    ) {
+      throw new TypeError('A valid user ID, office ID, and optional position are required.');
+    }
+
+    const normalizedUserId = userId.trim();
+    const normalizedOfficeId = officeId.trim();
+    if (this.userId !== normalizedUserId || this.officeId !== normalizedOfficeId) {
+      this.hasJoinedVoice = false;
+    }
+    this.userId = normalizedUserId;
+    this.officeId = normalizedOfficeId;
     this.position = position;
 
     if (!this.socket) {
@@ -95,60 +152,76 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
   }
 
   _joinVoiceRoom() {
-    if (!this.socket?.connected) return;
+    if (!this.socket?.connected || this.hasJoinedVoice) return;
     this.socket.emit(SIGNALING_EVENTS.VOICE_JOIN, {
       userId: this.userId,
       officeId: this.officeId,
       position: this.position,
     });
+    this.hasJoinedVoice = true;
   }
 
   _bindSocketEvents() {
     if (!this.socket) return;
+    if (this.boundSocket === this.socket) return;
 
-    this.socket.on('connect', () => {
+    const socket = this.socket;
+    this.boundSocket = socket;
+    const bind = (event, handler) => {
+      socket.on(event, handler);
+      this.socketHandlers.push({ socket, event, handler });
+    };
+
+    bind('connect', () => {
+      if (this.socket !== socket) return;
       this._joinVoiceRoom();
-      this.emitLocal('connected', { socketId: this.socket.id });
+      this.emitLocal('connected', { socketId: socket.id });
     });
 
-    this.socket.on('disconnect', (reason) => {
+    bind('disconnect', (reason) => {
+      if (this.socket !== socket) return;
+      this.hasJoinedVoice = false;
       this.emitLocal('disconnected', { reason });
     });
 
-    this.socket.on('connect_error', (err) => {
+    bind('connect_error', (err) => {
+      if (this.socket !== socket) return;
       this.emitLocal('error', { error: err });
     });
 
     // WebRTC Signaling Events
-    this.socket.on(SIGNALING_EVENTS.WEBRTC_OFFER, (data) => {
-      if (isValidSdpPayload(data) && data.toUserId === this.userId) {
-        this.emitLocal(SIGNALING_EVENTS.WEBRTC_OFFER, data);
-      }
+    bind(SIGNALING_EVENTS.WEBRTC_OFFER, (data) => {
+      this._emitValidSignalingPayload(
+        SIGNALING_EVENTS.WEBRTC_OFFER,
+        normalizeSdpPayload(data, 'offer')
+      );
     });
 
-    this.socket.on(SIGNALING_EVENTS.WEBRTC_ANSWER, (data) => {
-      if (isValidSdpPayload(data) && data.toUserId === this.userId) {
-        this.emitLocal(SIGNALING_EVENTS.WEBRTC_ANSWER, data);
-      }
+    bind(SIGNALING_EVENTS.WEBRTC_ANSWER, (data) => {
+      this._emitValidSignalingPayload(
+        SIGNALING_EVENTS.WEBRTC_ANSWER,
+        normalizeSdpPayload(data, 'answer')
+      );
     });
 
-    this.socket.on(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, (data) => {
-      if (isValidIceCandidatePayload(data) && data.toUserId === this.userId) {
-        this.emitLocal(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, data);
-      }
+    bind(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, (data) => {
+      this._emitValidSignalingPayload(
+        SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE,
+        normalizeIceCandidatePayload(data)
+      );
     });
 
     // Voice room presence
-    this.socket.on(SIGNALING_EVENTS.VOICE_USER_JOINED, (data) => {
-      this.emitLocal(SIGNALING_EVENTS.VOICE_USER_JOINED, data);
+    bind(SIGNALING_EVENTS.VOICE_USER_JOINED, (data) => {
+      this._emitValidPresencePayload(SIGNALING_EVENTS.VOICE_USER_JOINED, data);
     });
 
-    this.socket.on(SIGNALING_EVENTS.VOICE_USER_LEFT, (data) => {
-      this.emitLocal(SIGNALING_EVENTS.VOICE_USER_LEFT, data);
+    bind(SIGNALING_EVENTS.VOICE_USER_LEFT, (data) => {
+      this._emitValidPresencePayload(SIGNALING_EVENTS.VOICE_USER_LEFT, data);
     });
 
-    this.socket.on(SIGNALING_EVENTS.PROXIMITY_UPDATE, (data) => {
-      this.emitLocal(SIGNALING_EVENTS.PROXIMITY_UPDATE, data);
+    bind(SIGNALING_EVENTS.PROXIMITY_UPDATE, (data) => {
+      this._emitValidPresencePayload(SIGNALING_EVENTS.PROXIMITY_UPDATE, data);
     });
   }
 
@@ -160,6 +233,10 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       sdp,
     });
+    if (!isValidSdpPayload(payload, 'offer')) {
+      console.warn('[SignalingTransport] Ignoring invalid outgoing WebRTC offer.');
+      return;
+    }
     this.socket.emit(SIGNALING_EVENTS.WEBRTC_OFFER, payload);
   }
 
@@ -171,6 +248,10 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       sdp,
     });
+    if (!isValidSdpPayload(payload, 'answer')) {
+      console.warn('[SignalingTransport] Ignoring invalid outgoing WebRTC answer.');
+      return;
+    }
     this.socket.emit(SIGNALING_EVENTS.WEBRTC_ANSWER, payload);
   }
 
@@ -182,10 +263,18 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       candidate,
     });
+    if (!isValidIceCandidatePayload(payload)) {
+      console.warn('[SignalingTransport] Ignoring invalid outgoing ICE candidate.');
+      return;
+    }
     this.socket.emit(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, payload);
   }
 
   updatePosition(position) {
+    if (!isValidPosition(position)) {
+      console.warn('[SignalingTransport] Ignoring invalid position update.');
+      return;
+    }
     this.position = position;
     if (!this.socket?.connected) return;
     this.socket.emit(SIGNALING_EVENTS.PROXIMITY_UPDATE, {
@@ -206,9 +295,19 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
 
   disconnect() {
     this.leaveVoice();
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
+    const socket = this.socket;
+    if (socket) {
+      this.emitLocal('disconnected', { reason: 'io client disconnect' });
+    }
+    this.socket = null;
+    this.boundSocket = null;
+    this.hasJoinedVoice = false;
+    for (const { socket: boundSocket, event, handler } of this.socketHandlers) {
+      boundSocket.off?.(event, handler);
+    }
+    this.socketHandlers = [];
+    if (socket) {
+      socket.disconnect();
     }
   }
 }
@@ -229,42 +328,27 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
   }
 
   async connect({ userId, officeId, position }) {
-    this.userId = userId;
-    this.officeId = officeId;
+    if (
+      !isValidUserId(userId) ||
+      !isValidUserId(officeId) ||
+      (position !== undefined && !isValidPeerPresencePayload({ userId, officeId, position }))
+    ) {
+      throw new TypeError('A valid user ID, office ID, and optional position are required.');
+    }
+
+    this.userId = userId.trim();
+    this.officeId = officeId.trim();
     this.position = position;
     this.knownUsers.clear();
-    this.knownUsers.add(userId);
+    this.knownUsers.add(this.userId);
 
     if (typeof BroadcastChannel !== 'undefined') {
-      this.channel = new BroadcastChannel(`${this.channelName}_${officeId}`);
-      this.channel.onmessage = (event) => {
-        const { type, payload } = event.data || {};
-        if (!type || !payload) return;
-
-        // Skip messages sent by self
-        if (payload.fromUserId === this.userId || payload.userId === this.userId) return;
-
-        if (type === SIGNALING_EVENTS.VOICE_USER_LEFT) {
-          this.knownUsers.delete(payload.userId);
-        }
-
-        // Route if message is targeted to this user or broadcast to room
-        if (!payload.toUserId || payload.toUserId === this.userId) {
-          if (
-            type === SIGNALING_EVENTS.VOICE_USER_JOINED &&
-            payload.userId &&
-            !this.knownUsers.has(payload.userId)
-          ) {
-            this.knownUsers.add(payload.userId);
-            this._broadcast(SIGNALING_EVENTS.VOICE_USER_JOINED, {
-              userId: this.userId,
-              officeId: this.officeId,
-              position: this.position,
-            });
-          }
-          this.emitLocal(type, payload);
-        }
-      };
+      if (this.channel) {
+        this.channel.onmessage = null;
+        this.channel.close();
+      }
+      this.channel = new BroadcastChannel(`${this.channelName}_${this.officeId}`);
+      this.channel.onmessage = (event) => this._handleBroadcastMessage(event.data);
     }
 
     this.emitLocal('connected', { transport: 'broadcast' });
@@ -275,6 +359,55 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       position,
     });
+  }
+
+  _handleBroadcastMessage(message) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) return;
+    const { type, payload } = message;
+    if (typeof type !== 'string' || !payload || typeof payload !== 'object') return;
+
+    if (type === SIGNALING_EVENTS.WEBRTC_OFFER || type === SIGNALING_EVENTS.WEBRTC_ANSWER) {
+      const expectedType = type === SIGNALING_EVENTS.WEBRTC_OFFER ? 'offer' : 'answer';
+      this._emitValidSignalingPayload(type, normalizeSdpPayload(payload, expectedType));
+      return;
+    }
+
+    if (type === SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE) {
+      this._emitValidSignalingPayload(type, normalizeIceCandidatePayload(payload));
+      return;
+    }
+
+    if (
+      type !== SIGNALING_EVENTS.VOICE_USER_JOINED &&
+      type !== SIGNALING_EVENTS.VOICE_USER_LEFT &&
+      type !== SIGNALING_EVENTS.PROXIMITY_UPDATE
+    ) {
+      return;
+    }
+
+    if (
+      !isValidPeerPresencePayload(payload) ||
+      payload.userId === this.userId ||
+      (payload.officeId && payload.officeId !== this.officeId) ||
+      !isMessageForUser(payload, this.userId)
+    ) {
+      console.warn(`[BroadcastSignalingTransport] Ignoring invalid or misrouted ${type} payload.`);
+      return;
+    }
+
+    if (type === SIGNALING_EVENTS.VOICE_USER_JOINED) {
+      if (this.knownUsers.has(payload.userId)) return;
+      this.knownUsers.add(payload.userId);
+      this._broadcast(SIGNALING_EVENTS.VOICE_USER_JOINED, {
+        userId: this.userId,
+        officeId: this.officeId,
+        position: this.position,
+      });
+    } else if (type === SIGNALING_EVENTS.VOICE_USER_LEFT) {
+      this.knownUsers.delete(payload.userId);
+    }
+
+    this.emitLocal(type, payload);
   }
 
   _broadcast(type, payload) {
@@ -290,6 +423,10 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       sdp,
     });
+    if (!isValidSdpPayload(payload, 'offer')) {
+      console.warn('[BroadcastSignalingTransport] Ignoring invalid outgoing WebRTC offer.');
+      return;
+    }
     this._broadcast(SIGNALING_EVENTS.WEBRTC_OFFER, payload);
   }
 
@@ -300,6 +437,10 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       sdp,
     });
+    if (!isValidSdpPayload(payload, 'answer')) {
+      console.warn('[BroadcastSignalingTransport] Ignoring invalid outgoing WebRTC answer.');
+      return;
+    }
     this._broadcast(SIGNALING_EVENTS.WEBRTC_ANSWER, payload);
   }
 
@@ -310,10 +451,18 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
       officeId: this.officeId,
       candidate,
     });
+    if (!isValidIceCandidatePayload(payload)) {
+      console.warn('[BroadcastSignalingTransport] Ignoring invalid outgoing ICE candidate.');
+      return;
+    }
     this._broadcast(SIGNALING_EVENTS.WEBRTC_ICE_CANDIDATE, payload);
   }
 
   updatePosition(position) {
+    if (!isValidPosition(position)) {
+      console.warn('[BroadcastSignalingTransport] Ignoring invalid position update.');
+      return;
+    }
     this.position = position;
     this._broadcast(SIGNALING_EVENTS.PROXIMITY_UPDATE, {
       userId: this.userId,
@@ -332,6 +481,7 @@ export class BroadcastSignalingTransport extends BaseSignalingTransport {
   disconnect() {
     this.leaveVoice();
     if (this.channel) {
+      this.channel.onmessage = null;
       this.channel.close();
       this.channel = null;
     }

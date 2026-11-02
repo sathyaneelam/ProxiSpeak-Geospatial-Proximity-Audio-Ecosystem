@@ -33,18 +33,56 @@ export const SIGNALING_EVENTS = {
   AVATAR_MOVED: 'avatar:moved',
 };
 
+export function isValidUserId(userId) {
+  return typeof userId === 'string' && userId.trim().length > 0;
+}
+
+function getAliasedId(payload, primaryKey, aliasKey) {
+  const primary = payload[primaryKey];
+  const alias = payload[aliasKey];
+
+  if (
+    (primary !== undefined && !isValidUserId(primary)) ||
+    (alias !== undefined && !isValidUserId(alias))
+  ) {
+    return null;
+  }
+
+  if (
+    primary !== undefined &&
+    alias !== undefined &&
+    primary.trim() !== alias.trim()
+  ) {
+    return null;
+  }
+
+  const value = primary ?? alias;
+  return isValidUserId(value) ? value.trim() : null;
+}
+
+function isPayloadObject(payload) {
+  return payload !== null && typeof payload === 'object' && !Array.isArray(payload);
+}
+
 /**
  * Validates coordinate payload.
  * Coordinates are 2D canvas pixels: { x: number, y: number }.
  */
 export function isValidPosition(pos) {
   return (
-    pos !== null &&
-    typeof pos === 'object' &&
-    typeof pos.x === 'number' &&
-    !Number.isNaN(pos.x) &&
-    typeof pos.y === 'number' &&
-    !Number.isNaN(pos.y)
+    isPayloadObject(pos) &&
+    Number.isFinite(pos.x) &&
+    Number.isFinite(pos.y)
+  );
+}
+
+export function isValidSdpDescription(sdp, expectedType) {
+  return Boolean(
+    isPayloadObject(sdp) &&
+    (sdp.type === 'offer' || sdp.type === 'answer') &&
+    (!expectedType || sdp.type === expectedType) &&
+    typeof sdp.sdp === 'string' &&
+    sdp.sdp.trim().length > 0
   );
 }
 
@@ -52,29 +90,28 @@ export function isValidPosition(pos) {
  * Validates a WebRTC SDP offer/answer payload.
  * Supports both canonical Member 4 contract and Member 2 backend relay shapes.
  */
-export function isValidSdpPayload(payload) {
-  if (!payload || typeof payload !== 'object') return false;
-
-  const from = payload.fromUserId ?? payload.from;
-  const to = payload.toUserId ?? payload.to;
-
-  // Must have at least one valid identifier (either from or to)
-  const hasValidFrom = typeof from === 'string' && from.length > 0;
-  const hasValidTo = typeof to === 'string' && to.length > 0;
-  if (!hasValidFrom && !hasValidTo) {
-    return false;
-  }
-  // If fromUserId was explicitly supplied as empty string, reject
-  if (payload.fromUserId !== undefined && (typeof payload.fromUserId !== 'string' || payload.fromUserId.length === 0)) {
-    return false;
-  }
-
+export function isValidSdpPayload(payload, expectedType) {
+  if (!isPayloadObject(payload)) return false;
+  const fromUserId = getAliasedId(payload, 'fromUserId', 'from');
+  const toUserId = getAliasedId(payload, 'toUserId', 'to');
   const sdpObj = payload.sdp ?? payload.offer ?? payload.answer;
   return Boolean(
-    sdpObj &&
-    typeof sdpObj.type === 'string' &&
-    typeof sdpObj.sdp === 'string'
+    fromUserId &&
+    toUserId &&
+    (payload.officeId === undefined || isValidUserId(payload.officeId)) &&
+    isValidSdpDescription(sdpObj, expectedType)
   );
+}
+
+export function normalizeSdpPayload(payload, expectedType) {
+  if (!isValidSdpPayload(payload, expectedType)) return null;
+
+  return {
+    ...payload,
+    fromUserId: getAliasedId(payload, 'fromUserId', 'from'),
+    toUserId: getAliasedId(payload, 'toUserId', 'to'),
+    sdp: payload.sdp ?? payload.offer ?? payload.answer,
+  };
 }
 
 /**
@@ -82,23 +119,42 @@ export function isValidSdpPayload(payload) {
  * Supports both canonical Member 4 contract and Member 2 backend relay shapes.
  */
 export function isValidIceCandidatePayload(payload) {
-  if (!payload || typeof payload !== 'object') return false;
+  if (!isPayloadObject(payload)) return false;
 
-  const from = payload.fromUserId ?? payload.from;
-  const to = payload.toUserId ?? payload.to;
-
-  const hasValidFrom = typeof from === 'string' && from.length > 0;
-  const hasValidTo = typeof to === 'string' && to.length > 0;
-  if (!hasValidFrom && !hasValidTo) {
-    return false;
-  }
-  if (payload.fromUserId !== undefined && (typeof payload.fromUserId !== 'string' || payload.fromUserId.length === 0)) {
-    return false;
-  }
+  const fromUserId = getAliasedId(payload, 'fromUserId', 'from');
+  const toUserId = getAliasedId(payload, 'toUserId', 'to');
+  const candidate = payload.candidate;
 
   return Boolean(
-    payload.candidate &&
-    typeof payload.candidate.candidate === 'string'
+    fromUserId &&
+    toUserId &&
+    (payload.officeId === undefined || isValidUserId(payload.officeId)) &&
+    isPayloadObject(candidate) &&
+    typeof candidate.candidate === 'string' &&
+    (candidate.sdpMid === undefined || candidate.sdpMid === null || typeof candidate.sdpMid === 'string') &&
+    (candidate.sdpMLineIndex === undefined || candidate.sdpMLineIndex === null ||
+      (Number.isInteger(candidate.sdpMLineIndex) && candidate.sdpMLineIndex >= 0)) &&
+    (candidate.usernameFragment === undefined || candidate.usernameFragment === null ||
+      typeof candidate.usernameFragment === 'string')
+  );
+}
+
+export function normalizeIceCandidatePayload(payload) {
+  if (!isValidIceCandidatePayload(payload)) return null;
+
+  return {
+    ...payload,
+    fromUserId: getAliasedId(payload, 'fromUserId', 'from'),
+    toUserId: getAliasedId(payload, 'toUserId', 'to'),
+  };
+}
+
+export function isValidPeerPresencePayload(payload) {
+  return Boolean(
+    isPayloadObject(payload) &&
+    isValidUserId(payload.userId) &&
+    (payload.officeId === undefined || isValidUserId(payload.officeId)) &&
+    (payload.position === undefined || payload.position === null || isValidPosition(payload.position))
   );
 }
 
@@ -107,7 +163,7 @@ export function isValidIceCandidatePayload(payload) {
  * Provides both `to` + `offer` (Member 2 backend requirement) and `toUserId` + `sdp` (Member 4 canonical contract).
  */
 export function createOfferPayload({ fromUserId, toUserId, officeId, sdp, to, offer }) {
-  const targetId = to || toUserId;
+  const targetId = toUserId || to;
   const sdpObj = offer || sdp;
   const normalizedSdp = sdpObj?.type ? { type: sdpObj.type, sdp: sdpObj.sdp } : sdpObj;
 
@@ -127,7 +183,7 @@ export function createOfferPayload({ fromUserId, toUserId, officeId, sdp, to, of
  * Provides both `to` + `answer` (Member 2 backend requirement) and `toUserId` + `sdp` (Member 4 canonical contract).
  */
 export function createAnswerPayload({ fromUserId, toUserId, officeId, sdp, to, answer }) {
-  const targetId = to || toUserId;
+  const targetId = toUserId || to;
   const sdpObj = answer || sdp;
   const normalizedSdp = sdpObj?.type ? { type: sdpObj.type, sdp: sdpObj.sdp } : sdpObj;
 

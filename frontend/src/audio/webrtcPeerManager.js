@@ -1,3 +1,8 @@
+import {
+  isValidSdpDescription,
+  isValidUserId,
+} from './signalingContract.js';
+
 /**
  * ProxiSpeak WebRTC Peer Manager
  * 
@@ -59,6 +64,35 @@ export function getRTCConfiguration(customConfig = {}) {
 
 export const DEFAULT_RTC_CONFIG = getRTCConfiguration();
 
+function getSignalPeerId(payload) {
+  return payload?.fromUserId ?? payload?.from;
+}
+
+function isSignalForThisPeer(payload, localUserId, officeId) {
+  if (!payload) return false;
+  const senderIds = [payload.fromUserId, payload.from].filter((id) => id !== undefined);
+  if (!senderIds.length || !senderIds.every(isValidUserId)) return false;
+  const fromUserId = senderIds[0].trim();
+  const recipients = [payload.toUserId, payload.to];
+  return (
+    fromUserId !== localUserId &&
+    senderIds.every((senderId) => senderId.trim() === fromUserId) &&
+    recipients.every((recipient) =>
+      recipient === undefined ||
+      (isValidUserId(recipient) && recipient.trim() === localUserId)
+    ) &&
+    (payload.officeId === undefined ||
+      (isValidUserId(payload.officeId) && payload.officeId === officeId))
+  );
+}
+
+function isPeerEventInOffice(payload, officeId) {
+  return (
+    payload.officeId === undefined ||
+    (isValidUserId(payload.officeId) && payload.officeId === officeId)
+  );
+}
+
 export class WebRTCPeerManager {
   /**
    * @param {Object} options
@@ -73,8 +107,12 @@ export class WebRTCPeerManager {
    * @param {number} [options.disconnectGracePeriod] - Time to wait before retrying a disconnected peer
    */
   constructor(options = {}) {
-    this.localUserId = options.localUserId || `user_${Math.random().toString(36).slice(2, 8)}`;
-    this.officeId = options.officeId || 'default-office';
+     this.localUserId = isValidUserId(options.localUserId)
+       ? options.localUserId.trim()
+       : `user_${Math.random().toString(36).slice(2, 8)}`;
+     this.officeId = isValidUserId(options.officeId)
+       ? options.officeId.trim()
+       : 'default-office';
     this.signalingTransport = options.signalingTransport;
     this.rtcConfig = getRTCConfiguration(options.rtcConfig);
 
@@ -147,40 +185,51 @@ export class WebRTCPeerManager {
 
     this.unsubSignaling.push(
       this.signalingTransport.on('webrtc:offer', (payload) => {
-        this.handleRemoteOffer(payload.fromUserId, payload.sdp);
+        if (!isSignalForThisPeer(payload, this.localUserId, this.officeId)) return;
+        const peerId = getSignalPeerId(payload).trim();
+        void this.handleRemoteOffer(peerId, payload.sdp ?? payload.offer);
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('webrtc:answer', (payload) => {
-        this.handleRemoteAnswer(payload.fromUserId, payload.sdp);
+        if (!isSignalForThisPeer(payload, this.localUserId, this.officeId)) return;
+        const peerId = getSignalPeerId(payload).trim();
+        void this.handleRemoteAnswer(peerId, payload.sdp ?? payload.answer);
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('webrtc:ice-candidate', (payload) => {
-        this.handleRemoteIceCandidate(payload.fromUserId, payload.candidate);
+        if (!isSignalForThisPeer(payload, this.localUserId, this.officeId)) return;
+        const peerId = getSignalPeerId(payload).trim();
+        void this.handleRemoteIceCandidate(peerId, payload.candidate);
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('voice:user-left', (payload) => {
-        this.peerPositions.delete(payload.userId);
-        this.closePeer(payload.userId);
+        if (!isValidUserId(payload?.userId)) return;
+        if (!isPeerEventInOffice(payload, this.officeId)) return;
+        const peerId = payload.userId.trim();
+        this.peerPositions.delete(peerId);
+        this.closePeer(peerId);
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('voice:user-joined', (payload) => {
-        if (payload.officeId && payload.officeId !== this.officeId) return;
-        this.updatePeerPosition(payload.userId, payload.position);
+        if (!isValidUserId(payload?.userId)) return;
+        if (!isPeerEventInOffice(payload, this.officeId)) return;
+        this.updatePeerPosition(payload.userId.trim(), payload.position);
       })
     );
 
     this.unsubSignaling.push(
       this.signalingTransport.on('proximity:position-update', (payload) => {
-        if (payload.officeId && payload.officeId !== this.officeId) return;
-        this.updatePeerPosition(payload.userId, payload.position);
+        if (!isValidUserId(payload?.userId)) return;
+        if (!isPeerEventInOffice(payload, this.officeId)) return;
+        this.updatePeerPosition(payload.userId.trim(), payload.position);
       })
     );
   }
@@ -196,8 +245,8 @@ export class WebRTCPeerManager {
 
   updatePeerPosition(peerId, position) {
     if (
-      !peerId ||
-      peerId === this.localUserId ||
+      !isValidUserId(peerId) ||
+      peerId.trim() === this.localUserId ||
       !position ||
       !Number.isFinite(position.x) ||
       !Number.isFinite(position.y)
@@ -205,6 +254,7 @@ export class WebRTCPeerManager {
       return;
     }
 
+    peerId = peerId.trim();
     this.peerPositions.set(peerId, position);
     this._updatePeerProximity(peerId, position);
   }
@@ -253,7 +303,14 @@ export class WebRTCPeerManager {
    * @returns {Object} Peer Session
    */
   getOrCreatePeer(peerId) {
-    if (!peerId || peerId === this.localUserId) return null;
+    if (
+      this.destroyed ||
+      !isValidUserId(peerId) ||
+      peerId.trim() === this.localUserId
+    ) {
+      return null;
+    }
+    peerId = peerId.trim();
 
     if (this.peers.has(peerId)) {
       const existing = this.peers.get(peerId);
@@ -263,14 +320,13 @@ export class WebRTCPeerManager {
       this.closePeer(peerId);
     }
 
-    this.desiredPeers.add(peerId);
-
     const PeerConnectionClass = window.RTCPeerConnection || window.webkitRTCPeerConnection;
     if (!PeerConnectionClass) {
       throw new Error('RTCPeerConnection is not supported in this browser environment.');
     }
 
     const pc = new PeerConnectionClass(this.rtcConfig);
+    this.desiredPeers.add(peerId);
     const polite = this.isPolite(peerId);
 
     const session = {
@@ -280,7 +336,12 @@ export class WebRTCPeerManager {
       makingOffer: false,
       ignoreOffer: false,
       isSettingRemoteAnswerPending: false,
+      handlingRemoteOffer: false,
+      currentRemoteOfferSdp: null,
+      pendingRemoteOffer: null,
+      seenRemoteOffers: new Set(),
       iceCandidateBuffer: [],
+      seenRemoteCandidates: new Set(),
       remoteStream: new MediaStream(),
     };
 
@@ -300,12 +361,22 @@ export class WebRTCPeerManager {
 
     // Perfect Negotiation: onnegotiationneeded
     pc.onnegotiationneeded = async () => {
-      if (session.makingOffer || pc.signalingState !== 'stable') return;
+      if (
+        !this._isCurrentSession(peerId, session) ||
+        session.makingOffer ||
+        pc.signalingState !== 'stable'
+      ) {
+        return;
+      }
 
       try {
         session.makingOffer = true;
         await pc.setLocalDescription();
-        if (this.signalingTransport && pc.localDescription) {
+        if (
+          this._isCurrentSession(peerId, session) &&
+          this.signalingTransport &&
+          pc.localDescription
+        ) {
           this.signalingTransport.sendOffer({
             toUserId: peerId,
             sdp: pc.localDescription,
@@ -321,26 +392,38 @@ export class WebRTCPeerManager {
 
     // ICE Candidate generation
     pc.onicecandidate = (event) => {
-      if (event.candidate && this.signalingTransport) {
-        this.signalingTransport.sendIceCandidate({
-          toUserId: peerId,
-          candidate: event.candidate,
-        });
+      if (event.candidate && this.signalingTransport && this._isCurrentSession(peerId, session)) {
+        try {
+          this.signalingTransport.sendIceCandidate({
+            toUserId: peerId,
+            candidate: event.candidate,
+          });
+        } catch (err) {
+          console.error(`[WebRTCPeerManager] Error sending ICE candidate to ${peerId}:`, err);
+        }
       }
     };
 
     // Handle remote media tracks
     pc.ontrack = (event) => {
-      if (event.track) {
-        session.remoteStream.addTrack(event.track);
-        this.onRemoteStream(peerId, session.remoteStream);
+      if (event.track && this._isCurrentSession(peerId, session)) {
+        if (!session.remoteStream.getTracks().includes(event.track)) {
+          session.remoteStream.addTrack(event.track);
+        }
+        this._notifyPeerCallback('onRemoteStream', this.onRemoteStream, peerId, session.remoteStream);
       }
     };
 
     // Connection state changes
     pc.onconnectionstatechange = () => {
+      if (this.destroyed || this.peers.get(peerId) !== session) return;
       const state = pc.connectionState;
-      this.onPeerConnectionState(peerId, state);
+      this._notifyPeerCallback(
+        'onPeerConnectionState',
+        this.onPeerConnectionState,
+        peerId,
+        state
+      );
 
       if (state === 'connected') {
         this._clearReconnectTimer(peerId);
@@ -356,6 +439,21 @@ export class WebRTCPeerManager {
       }
     };
 
+    pc.oniceconnectionstatechange = () => {
+      if (!this._isCurrentSession(peerId, session)) return;
+      if (pc.iceConnectionState === 'failed') {
+        this._clearDisconnectTimer(peerId);
+        this._scheduleReconnect(peerId, session);
+      } else if (pc.iceConnectionState === 'disconnected') {
+        this._scheduleDisconnectRecovery(peerId, session);
+      } else if (
+        pc.iceConnectionState === 'connected' ||
+        pc.iceConnectionState === 'completed'
+      ) {
+        this._clearDisconnectTimer(peerId);
+      }
+    };
+
     return session;
   }
 
@@ -363,6 +461,8 @@ export class WebRTCPeerManager {
    * Initiates an offer to a peer (e.g. when entering earshot).
    */
   async initiateConnection(peerId) {
+    if (!isValidUserId(peerId)) return;
+    peerId = peerId.trim();
     const session = this.getOrCreatePeer(peerId);
     if (!session) return;
 
@@ -375,8 +475,13 @@ export class WebRTCPeerManager {
       try {
         session.makingOffer = true;
         const offer = await session.pc.createOffer();
+        if (!this._isCurrentSession(peerId, session)) return;
         await session.pc.setLocalDescription(offer);
-        if (this.signalingTransport && session.pc.localDescription) {
+        if (
+          this._isCurrentSession(peerId, session) &&
+          this.signalingTransport &&
+          session.pc.localDescription
+        ) {
           this.signalingTransport.sendOffer({
             toUserId: peerId,
             sdp: session.pc.localDescription,
@@ -395,10 +500,35 @@ export class WebRTCPeerManager {
    * Handles incoming WebRTC SDP Offer with Perfect Negotiation glare handling.
    */
   async handleRemoteOffer(fromPeerId, sdp) {
-    if (!sdp || sdp.type !== 'offer') return;
+    if (
+      this.destroyed ||
+      !isValidUserId(fromPeerId) ||
+      fromPeerId.trim() === this.localUserId ||
+      !isValidSdpDescription(sdp, 'offer')
+    ) {
+      return;
+    }
+    fromPeerId = fromPeerId.trim();
 
     const session = this.getOrCreatePeer(fromPeerId);
-    if (!session) return;
+    if (!session || session.seenRemoteOffers.has(sdp.sdp)) return;
+    if (session.handlingRemoteOffer) {
+      if (
+        session.currentRemoteOfferSdp !== sdp.sdp &&
+        session.pendingRemoteOffer?.sdp !== sdp.sdp
+      ) {
+        session.pendingRemoteOffer = sdp;
+      }
+      return;
+    }
+
+    session.seenRemoteOffers.add(sdp.sdp);
+    await this._processRemoteOffer(fromPeerId, sdp, session);
+  }
+
+  async _processRemoteOffer(fromPeerId, sdp, session) {
+    session.handlingRemoteOffer = true;
+    session.currentRemoteOfferSdp = sdp.sdp;
 
     const pc = session.pc;
     const readyForOffer = !session.makingOffer && (pc.signalingState === 'stable' || session.isSettingRemoteAnswerPending);
@@ -407,22 +537,31 @@ export class WebRTCPeerManager {
     session.ignoreOffer = !session.isPolite && offerCollision;
     if (session.ignoreOffer) {
       console.warn(`[WebRTCPeerManager] Glare collision: Impolite peer ignoring offer from ${fromPeerId}`);
-      return;
     }
 
     try {
+      if (session.ignoreOffer) return;
+
       if (offerCollision && session.isPolite) {
         console.info(`[WebRTCPeerManager] Glare collision: Polite peer rolling back for ${fromPeerId}`);
         await pc.setLocalDescription({ type: 'rollback' });
+        if (!this._isCurrentSession(fromPeerId, session)) return;
       }
 
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      if (!this._isCurrentSession(fromPeerId, session)) return;
       await this._drainIceCandidateBuffer(session);
+      if (!this._isCurrentSession(fromPeerId, session)) return;
 
       const answer = await pc.createAnswer();
+      if (!this._isCurrentSession(fromPeerId, session)) return;
       await pc.setLocalDescription(answer);
 
-      if (this.signalingTransport && pc.localDescription) {
+      if (
+        this._isCurrentSession(fromPeerId, session) &&
+        this.signalingTransport &&
+        pc.localDescription
+      ) {
         this.signalingTransport.sendAnswer({
           toUserId: fromPeerId,
           sdp: pc.localDescription,
@@ -430,7 +569,21 @@ export class WebRTCPeerManager {
       }
     } catch (err) {
       console.error(`[WebRTCPeerManager] Error handling offer from ${fromPeerId}:`, err);
+      session.pendingRemoteOffer = null;
       this._scheduleReconnect(fromPeerId, session);
+    } finally {
+      session.handlingRemoteOffer = false;
+      session.currentRemoteOfferSdp = null;
+      const pendingOffer = session.pendingRemoteOffer;
+      session.pendingRemoteOffer = null;
+      if (
+        pendingOffer &&
+        this._isCurrentSession(fromPeerId, session) &&
+        !session.seenRemoteOffers.has(pendingOffer.sdp)
+      ) {
+        session.seenRemoteOffers.add(pendingOffer.sdp);
+        void this._processRemoteOffer(fromPeerId, pendingOffer, session);
+      }
     }
   }
 
@@ -438,7 +591,15 @@ export class WebRTCPeerManager {
    * Handles incoming WebRTC SDP Answer.
    */
   async handleRemoteAnswer(fromPeerId, sdp) {
-    if (!sdp || sdp.type !== 'answer') return;
+    if (
+      this.destroyed ||
+      !isValidUserId(fromPeerId) ||
+      fromPeerId.trim() === this.localUserId ||
+      !isValidSdpDescription(sdp, 'answer')
+    ) {
+      return;
+    }
+    fromPeerId = fromPeerId.trim();
 
     const session = this.peers.get(fromPeerId);
     if (!session) return;
@@ -452,6 +613,7 @@ export class WebRTCPeerManager {
     try {
       session.isSettingRemoteAnswerPending = true;
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      if (!this._isCurrentSession(fromPeerId, session)) return;
       await this._drainIceCandidateBuffer(session);
     } catch (err) {
       console.error(`[WebRTCPeerManager] Error setting remote answer from ${fromPeerId}:`, err);
@@ -465,10 +627,28 @@ export class WebRTCPeerManager {
    * Handles incoming ICE candidate with early candidate queueing.
    */
   async handleRemoteIceCandidate(fromPeerId, candidateInit) {
-    if (!candidateInit) return;
+    if (
+      this.destroyed ||
+      !isValidUserId(fromPeerId) ||
+      fromPeerId.trim() === this.localUserId ||
+      !candidateInit ||
+      typeof candidateInit.candidate !== 'string'
+    ) {
+      return;
+    }
+    fromPeerId = fromPeerId.trim();
 
     const session = this.peers.get(fromPeerId);
     if (!session) return;
+
+    const candidateKey = JSON.stringify([
+      candidateInit.candidate,
+      candidateInit.sdpMid ?? null,
+      candidateInit.sdpMLineIndex ?? null,
+      candidateInit.usernameFragment ?? null,
+    ]);
+    if (session.seenRemoteCandidates.has(candidateKey)) return;
+    session.seenRemoteCandidates.add(candidateKey);
 
     const pc = session.pc;
     if (!pc.remoteDescription || !pc.remoteDescription.type) {
@@ -488,6 +668,10 @@ export class WebRTCPeerManager {
 
   async _drainIceCandidateBuffer(session) {
     while (session.iceCandidateBuffer.length > 0) {
+      if (!this._isCurrentSession(session.peerId, session)) {
+        session.iceCandidateBuffer.length = 0;
+        return;
+      }
       const candidateInit = session.iceCandidateBuffer.shift();
       try {
         await session.pc.addIceCandidate(new RTCIceCandidate(candidateInit));
@@ -518,26 +702,53 @@ export class WebRTCPeerManager {
   _closePeerSession(peerId, session) {
     if (this.peers.get(peerId) !== session) return;
 
-    try {
-      if (session.pc) {
-        session.pc.ontrack = null;
-        session.pc.onicecandidate = null;
-        session.pc.onnegotiationneeded = null;
-        session.pc.onconnectionstatechange = null;
+    if (session.pc) {
+      session.pc.ontrack = null;
+      session.pc.onicecandidate = null;
+      session.pc.onnegotiationneeded = null;
+      session.pc.onconnectionstatechange = null;
+      session.pc.oniceconnectionstatechange = null;
+      try {
         if (session.pc.connectionState !== 'closed') {
           session.pc.close();
         }
+      } catch (err) {
+        console.warn(`[WebRTCPeerManager] Error closing connection for peer ${peerId}:`, err);
       }
+    }
 
-      if (session.remoteStream) {
-        session.remoteStream.getTracks().forEach((t) => t.stop());
+    session.iceCandidateBuffer.length = 0;
+    session.seenRemoteCandidates.clear();
+    session.seenRemoteOffers.clear();
+    session.pendingRemoteOffer = null;
+    if (session.remoteStream) {
+      for (const track of session.remoteStream.getTracks()) {
+        try {
+          track.stop();
+        } catch (err) {
+          console.warn(`[WebRTCPeerManager] Error stopping remote track for peer ${peerId}:`, err);
+        }
       }
-    } catch (err) {
-      console.warn(`[WebRTCPeerManager] Error closing peer ${peerId}:`, err);
     }
 
     this.peers.delete(peerId);
-    this.onPeerRemoved(peerId);
+    this._notifyPeerCallback('onPeerRemoved', this.onPeerRemoved, peerId);
+  }
+
+  _isCurrentSession(peerId, session) {
+    return (
+      !this.destroyed &&
+      this.peers.get(peerId) === session &&
+      session.pc.connectionState !== 'closed'
+    );
+  }
+
+  _notifyPeerCallback(name, callback, ...args) {
+    try {
+      callback(...args);
+    } catch (err) {
+      console.error(`[WebRTCPeerManager] ${name} callback failed:`, err);
+    }
   }
 
   _scheduleDisconnectRecovery(peerId, session) {
@@ -547,7 +758,8 @@ export class WebRTCPeerManager {
       this.disconnectTimers.delete(peerId);
       if (
         this.peers.get(peerId) === session &&
-        session.pc.connectionState === 'disconnected'
+        (session.pc.connectionState === 'disconnected' ||
+          session.pc.iceConnectionState === 'disconnected')
       ) {
         this._scheduleReconnect(peerId, session);
       }
@@ -610,7 +822,11 @@ export class WebRTCPeerManager {
   destroy() {
     this.destroyed = true;
     for (const unsub of this.unsubSignaling) {
-      unsub();
+      try {
+        unsub();
+      } catch (err) {
+        console.warn('[WebRTCPeerManager] Error removing signaling listener:', err);
+      }
     }
     this.unsubSignaling = [];
 
