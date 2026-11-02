@@ -6,6 +6,8 @@ import officeFloorplan from './assets/office-floorplan.png'
 
 import { useSocket } from './hooks/useSocket'
 import { useProximityAudio } from './audio/useProximityAudio'
+import { createAuthApi } from './auth/authApi.js'
+import { planClickPath } from './navigation/clickToMove.js'
 import { createRoomCamera, getCameraTarget, updateRoomCamera, applyRoomCamera, screenToWorld, worldToScreen } from './camera/roomCamera'
 
 
@@ -15,6 +17,9 @@ const WIDTH = 2000
 const HEIGHT = 1200
 
 const SPEED = 260
+
+// Use Vite's same-origin API proxy for cookie-based sign-out.
+const signOutApi = createAuthApi({ baseUrl: '' })
 
 const RADIUS = 100
 
@@ -206,6 +211,7 @@ function App() {
   const hoveredPeerIdRef = useRef(null)
 
   const keysRef = useRef(new Set())
+  const clickPathRef = useRef([])
 
   const playerRef = useRef({ x: 1000, y: 600 })
 
@@ -227,6 +233,9 @@ function App() {
   const [isImmersiveMode, setIsImmersiveMode] = useState(false)
   const [presentationMode, setPresentationMode] = useState(false)
   const [campusGuideOpen, setCampusGuideOpen] = useState(false)
+  const [walkNotice, setWalkNotice] = useState('')
+  const [signingOut, setSigningOut] = useState(false)
+  const [signOutError, setSignOutError] = useState('')
   const [immersiveRoom, setImmersiveRoom] = useState(null)
 
 
@@ -588,6 +597,17 @@ function App() {
       hoveredPeerIdRef.current = nearest
       setHoveredPeer((previous) => previous === nearest ? previous : nearest)
     }
+    const handleCanvasClick = (event) => {
+      if (event.button !== 0) return
+      const bounds = canvas.getBoundingClientRect()
+      const world = screenToWorld(
+        event.clientX - bounds.left, event.clientY - bounds.top, cameraRef.current, viewport
+      )
+      const route = planClickPath(playerRef.current, world, isBlocked, { width: WIDTH, height: HEIGHT })
+      clickPathRef.current = route
+      setWalkNotice(route.length ? 'Walking to selected location' : 'This location is blocked or unreachable')
+    }
+
     const handleCanvasMouseLeave = () => {
       hoveredPeerIdRef.current = null
       setHoveredPeer(null)
@@ -601,6 +621,7 @@ function App() {
 
     window.addEventListener('blur', clearKeys)
     canvas.addEventListener('mousemove', handleCanvasMouseMove)
+    canvas.addEventListener('click', handleCanvasClick)
     canvas.addEventListener('mouseleave', handleCanvasMouseLeave)
 
 
@@ -687,21 +708,37 @@ function App() {
 
 
 
-      const length = Math.hypot(dx, dy)
+      let length = Math.hypot(dx, dy)
+      let distanceStep = SPEED * dt
+      let walkingToClick = false
 
-
+      // Keyboard movement always overrides click navigation immediately.
+      if (length > 0 && clickPathRef.current.length) {
+        clickPathRef.current = []
+        setWalkNotice('Manual control active')
+      }
+      if (length === 0 && clickPathRef.current.length) {
+        const goal = clickPathRef.current[0]
+        const distance = Math.hypot(goal.x - p.x, goal.y - p.y)
+        if (distance < 0.6) {
+          clickPathRef.current.shift()
+          if (!clickPathRef.current.length) setWalkNotice('Destination reached')
+        } else {
+          dx = goal.x - p.x
+          dy = goal.y - p.y
+          length = distance
+          walkingToClick = true
+          distanceStep = Math.min(SPEED * dt, distance)
+        }
+      }
 
       if (length > 0) {
-
         dx /= length
-
         dy /= length
-
-
-
-        const nextX = p.x + dx * SPEED * dt
-
-        const nextY = p.y + dy * SPEED * dt
+        const beforeX = p.x
+        const beforeY = p.y
+        const nextX = p.x + dx * distanceStep
+        const nextY = p.y + dy * distanceStep
 
 
 
@@ -719,7 +756,16 @@ function App() {
 
         }
 
-
+        if (walkingToClick) {
+          const goal = clickPathRef.current[0]
+          if (goal && Math.hypot(goal.x - p.x, goal.y - p.y) < 0.6) {
+            clickPathRef.current.shift()
+            if (!clickPathRef.current.length) setWalkNotice('Destination reached')
+          } else if (Math.hypot(beforeX - p.x, beforeY - p.y) < 0.01 && distanceStep > 0) {
+            clickPathRef.current = []
+            setWalkNotice('Route blocked. Choose a different spot')
+          }
+        }
 
         if (socketRef.current?.connected) {
 
@@ -811,6 +857,20 @@ function App() {
         ctx.font = '600 18px Arial'
         ctx.textAlign = 'center'
         ctx.fillText('Loading expanded office interior…', 1000, 600)
+      }
+
+      // Marker for the currently selected destination (in world coordinates).
+      const markedGoal = clickPathRef.current[clickPathRef.current.length - 1]
+      if (markedGoal) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(markedGoal.x, markedGoal.y, 12, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(34,211,238,0.12)'
+        ctx.fill()
+        ctx.strokeStyle = '#22d3ee'
+        ctx.lineWidth = 2.5
+        ctx.stroke()
+        ctx.restore()
       }
 
       // Preserve original authoritative 100px earshot radius.
@@ -910,6 +970,7 @@ function App() {
 
       window.removeEventListener('blur', clearKeys)
       canvas.removeEventListener('mousemove', handleCanvasMouseMove)
+      canvas.removeEventListener('click', handleCanvasClick)
       canvas.removeEventListener('mouseleave', handleCanvasMouseLeave)
       viewportObserver.disconnect()
       window.removeEventListener('resize', measureCanvas)
@@ -989,6 +1050,28 @@ function App() {
     preferredTransport: 'shared',
     sharedSocketRef: socketRef,
   })
+
+  function leaveOffice(destination = '/meetings.html') {
+    // Notify multiplayer peers and let the socket close on navigation.
+    try { socketRef.current?.emit('office:leave') } catch { /* offline preview */ }
+    socketRef.current?.disconnect()
+    window.location.assign(destination)
+  }
+
+  async function signOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    setSignOutError('')
+    try {
+      await signOutApi.logout()
+      // Only redirect after the server confirms session invalidation.
+      leaveOffice('/auth-playground.html')
+    } catch (error) {
+      setSignOutError(`Secure sign out could not be confirmed: ${error?.message || 'server unavailable'}. You can still leave the office.`)
+    } finally {
+      setSigningOut(false)
+    }
+  }
 
   return (
 
@@ -1077,6 +1160,12 @@ function App() {
 
 
 
+        <div className="proxispeak-exit-actions" aria-label="Office exit controls">
+          <button type="button" className="proxispeak-leave-button" onClick={() => leaveOffice()}>Leave office</button>
+          <button type="button" className="proxispeak-signout-button" onClick={signOut} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>
+        </div>
+        {signOutError && <p className="proxispeak-signout-error" role="alert">{signOutError}</p>}
+
         <div className="sidebar-bottom">
 
           <span className="status-dot" />{' '}
@@ -1136,14 +1225,15 @@ function App() {
 
             </div>
 
-            <span className="controls-hint">W A S D / ARROW KEYS</span>
+            <span className="controls-hint">W A S D / ARROWS / CLICK TO WALK</span>
 
           </div>
 
 
 
           <div className="canvas-wrapper day7-canvas-wrap">
-            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} aria-label="Virtual office map, use arrow keys or WASD to move" />
+            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} aria-label="Virtual office map. Click a walkable spot to walk there, or use arrow keys or WASD" />
+            {walkNotice && <span className="proxispeak-walk-notice" role="status">{walkNotice}</span>}
             <div className="campus-hud">
               <div className="campus-hud-top">
                 <div className="campus-brand-chip">
@@ -1214,12 +1304,12 @@ function App() {
                     <span className="campus-room-notice">Walk out of this zone to return to dashboard</span>
                   )}
                   <span className="campus-controls-divider" />
-                  <span className="campus-walk-hint">W A S D <span>to walk</span></span>
+                  <span className="campus-walk-hint">W A S D <span>or click map</span></span>
                 </div>
                 {campusGuideOpen && (
                   <div className="campus-guide" role="status">
                     <strong>Explore ProxiSpeak</strong>
-                    <span>Use WASD or arrow keys to explore the expanded campus.</span>
+                    <span>Use WASD/arrow keys or click a walkable location to move. Keyboard cancels the click route.</span>
                     <span>The camera follows you. Enter a room to open its immersive view.</span>
                     <span>2000×1200 world · 100px proximity (server-authoritative).</span>
                     <span>Use the minimap outline to understand your viewing area.</span>

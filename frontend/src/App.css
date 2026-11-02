@@ -518,3 +518,14 @@
   border-radius: 0;
 }
 
+/* Targeted click-to-walk and account/office exit additions. */
+.day7-canvas-wrap canvas { cursor: crosshair; }
+.proxispeak-exit-actions { display: grid; gap: 8px; margin-top: auto; }
+.proxispeak-exit-actions button { min-height: 40px; border-radius: 10px; font-weight: 700; font-size: 12px; cursor: pointer; }
+.proxispeak-leave-button { border: 1px solid #315168; color: #c6e8f2; background: #13283b; }
+.proxispeak-signout-button { border: 1px solid #8f4949; color: #ffd9d9; background: #3e1f2a; }
+.proxispeak-exit-actions button:disabled { opacity: .6; cursor: wait; }
+.proxispeak-exit-actions button:hover:not(:disabled) { filter: brightness(1.12); }
+.proxispeak-signout-error { margin: 0; color: #ffbaba; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.proxispeak-exit-actions + .sidebar-bottom { margin-top: 0; }
+.proxispeak-walk-notice { position: absolute; z-index: 6; left: 50%; top: 8px; transform: translateX(-50%); pointer-events: none; background: #102b34e8; color: #d9faff; padding: 6px 11px; font-size: 11px; font-weight: 700; border-radius: 24px; white-space: nowrap; max-width: 90%; overflow: hidden; text-overflow: ellipsis; }
