@@ -1,6 +1,8 @@
+
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 
+// SIGNUP API
 async function signup(req, res, next) {
   try {
     const { displayName, email, password } = req.body;
@@ -62,7 +64,7 @@ async function signup(req, res, next) {
   }
 }
 
-// LOGIN API
+// LOGIN API WITH SESSION CREATION
 async function login(req, res, next) {
   try {
     const { email, password } = req.body;
@@ -104,9 +106,56 @@ async function login(req, res, next) {
       });
     }
 
+    req.session.regenerate((regenerateError) => {
+      if (regenerateError) {
+        return next(regenerateError);
+      }
+
+      req.session.userId = user._id.toString();
+
+      req.session.save((saveError) => {
+        if (saveError) {
+          return next(saveError);
+        }
+
+        return res.status(200).json({
+          status: "success",
+          message: "Login successful",
+          data: {
+            id: user._id,
+            displayName: user.displayName,
+            email: user.email,
+          },
+        });
+      });
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// VERIFY LOGIN SESSION API
+async function getCurrentUser(req, res, next) {
+  try {
+    if (!req.session || !req.session.userId) {
+      return res.status(401).json({
+        status: "error",
+        message: "Authentication required",
+      });
+    }
+
+    const user = await User.findById(req.session.userId);
+
+    if (!user) {
+      return res.status(401).json({
+        status: "error",
+        message: "User session is invalid",
+      });
+    }
+
     return res.status(200).json({
       status: "success",
-      message: "Login successful",
+      message: "User session verified",
       data: {
         id: user._id,
         displayName: user.displayName,
@@ -118,4 +167,40 @@ async function login(req, res, next) {
   }
 }
 
-module.exports = { signup, login };
+// LOGOUT API
+async function logout(req, res, next) {
+  try {
+    if (!req.session || !req.session.userId) {
+      return res.status(401).json({
+        status: "error",
+        message: "Authentication required",
+      });
+    }
+
+    req.session.destroy((error) => {
+      if (error) {
+        return next(error);
+      }
+
+      res.clearCookie("proxispeak.sid", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+      });
+
+      return res.status(200).json({
+        status: "success",
+        message: "Logout successful",
+      });
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = {
+  signup,
+  login,
+  getCurrentUser,
+  logout,
+};
