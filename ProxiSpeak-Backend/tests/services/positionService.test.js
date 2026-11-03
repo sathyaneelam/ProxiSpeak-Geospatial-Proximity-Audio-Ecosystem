@@ -4351,4 +4351,660 @@ describe('Position Service & Contract Validation', () => {
       }
     });
   });
+
+  describe('Day 15: ProxiSpeak MongoDB Final Validation & End-to-End Workflow', () => {
+    const Office = require('../../src/models/Office');
+    const { findOrCreateUser } = require('../../src/services/userService');
+    const { seedDefaultOffice, getOfficeByIdOrCode } = require('../../src/services/officeService');
+
+    const day15Office1Id = new mongoose.Types.ObjectId();
+    const day15Office2Id = new mongoose.Types.ObjectId();
+
+    let day15PositionStore;
+    let day15UserStore;
+    let day15OfficeStore;
+    let day15WriteCount;
+
+    let lpFindOneMock;
+    let lpFindOneAndUpdateMock;
+    let lpFindMock;
+    let lpFindOneAndDeleteMock;
+    let lpDeleteManyMock;
+
+    let userFindOneMock;
+    let userCreateMock;
+    let userFindByIdMock;
+
+    let officeFindOneMock;
+    let officeFindByIdMock;
+    let officeFindOneAndUpdateMock;
+
+    function setupDay15Mocks() {
+      day15PositionStore = new Map();
+      day15UserStore = new Map();
+      day15OfficeStore = new Map();
+      day15WriteCount = 0;
+
+      // Seed baseline offices in store
+      day15OfficeStore.set(String(day15Office1Id), {
+        _id: day15Office1Id,
+        code: 'office-01',
+        name: 'ProxiSpeak Main Office',
+        dimensions: { width: 1000, height: 600 },
+        proximityRadius: 100
+      });
+      day15OfficeStore.set(String(day15Office2Id), {
+        _id: day15Office2Id,
+        code: 'office-02',
+        name: 'ProxiSpeak Secondary Office',
+        dimensions: { width: 1000, height: 600 },
+        proximityRadius: 100
+      });
+
+      // LivePosition Mocks
+      lpFindOneMock = mock.method(LivePosition, 'findOne', async (filter) => {
+        if (filter.userId) {
+          const doc = day15PositionStore.get(String(filter.userId));
+          return doc ? { ...doc } : null;
+        }
+        if (filter.socketId) {
+          for (const doc of day15PositionStore.values()) {
+            if (doc.socketId === filter.socketId) return { ...doc };
+          }
+        }
+        return null;
+      });
+
+      lpFindOneAndUpdateMock = mock.method(LivePosition, 'findOneAndUpdate', async (filter, update, options) => {
+        day15WriteCount++;
+        const userId = String(filter.userId);
+        let doc = day15PositionStore.get(userId);
+
+        if (!doc) {
+          if (options && options.upsert) {
+            doc = {
+              _id: new mongoose.Types.ObjectId(),
+              userId: filter.userId,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              lastUpdated: new Date(),
+              ...update.$set
+            };
+            day15PositionStore.set(userId, doc);
+            return { ...doc };
+          }
+          return null;
+        }
+
+        Object.assign(doc, update.$set, { updatedAt: new Date(), lastUpdated: update.$set.lastUpdated || new Date() });
+        day15PositionStore.set(userId, doc);
+        return { ...doc };
+      });
+
+      lpFindMock = mock.method(LivePosition, 'find', (query) => {
+        return {
+          populate: () => ({
+            lean: async () => {
+              const results = [];
+              for (const doc of day15PositionStore.values()) {
+                if (query.officeId && String(doc.officeId) !== String(query.officeId)) {
+                  continue;
+                }
+                if (query.userId?.$ne && String(doc.userId) === String(query.userId.$ne)) {
+                  continue;
+                }
+                if (query.location?.$geoWithin?.$center) {
+                  const [[cx, cy], maxRadius] = query.location.$geoWithin.$center;
+                  const [x, y] = doc.location;
+                  const distance = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+                  if (distance > maxRadius) {
+                    continue;
+                  }
+                }
+                const user = day15UserStore.get(String(doc.userId)) || {
+                  _id: doc.userId,
+                  displayName: 'Test User',
+                  avatarColor: '#3b82f6',
+                  avatarUrl: '',
+                  isOnline: true
+                };
+                results.push({
+                  ...doc,
+                  userId: user
+                });
+              }
+              return results;
+            }
+          })
+        };
+      });
+
+      lpFindOneAndDeleteMock = mock.method(LivePosition, 'findOneAndDelete', async (filter) => {
+        if (filter.userId) {
+          const userId = String(filter.userId);
+          const doc = day15PositionStore.get(userId);
+          if (doc) {
+            day15PositionStore.delete(userId);
+            return { ...doc };
+          }
+        }
+        if (filter.socketId) {
+          for (const [key, doc] of day15PositionStore.entries()) {
+            if (doc.socketId === filter.socketId) {
+              day15PositionStore.delete(key);
+              return { ...doc };
+            }
+          }
+        }
+        return null;
+      });
+
+      lpDeleteManyMock = mock.method(LivePosition, 'deleteMany', async (filter) => {
+        let deleted = 0;
+        for (const [key, doc] of Array.from(day15PositionStore.entries())) {
+          let match = true;
+          if (filter.officeId && String(doc.officeId) !== String(filter.officeId)) {
+            match = false;
+          }
+          if (filter.lastUpdated?.$lt) {
+            if (!(doc.lastUpdated < filter.lastUpdated.$lt)) {
+              match = false;
+            }
+          }
+          if (match) {
+            day15PositionStore.delete(key);
+            deleted++;
+          }
+        }
+        return { deletedCount: deleted };
+      });
+
+      // User Mocks
+      userFindOneMock = mock.method(User, 'findOne', async (filter) => {
+        if (filter.email) {
+          for (const user of day15UserStore.values()) {
+            if (user.email === filter.email) return { ...user };
+          }
+        }
+        return null;
+      });
+
+      userCreateMock = mock.method(User, 'create', async (doc) => {
+        // Enforce unique email constraint simulation
+        for (const user of day15UserStore.values()) {
+          if (user.email === doc.email) {
+            const err = new Error('E11000 duplicate key error');
+            err.code = 11000;
+            throw err;
+          }
+        }
+        const created = {
+          _id: new mongoose.Types.ObjectId(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...doc
+        };
+        day15UserStore.set(String(created._id), created);
+        return { ...created };
+      });
+
+      userFindByIdMock = mock.method(User, 'findById', (id) => ({
+        lean: async () => day15UserStore.get(String(id)) || null
+      }));
+
+      // Office Mocks
+      officeFindOneMock = mock.method(Office, 'findOne', async (filter) => {
+        if (filter.code) {
+          for (const off of day15OfficeStore.values()) {
+            if (off.code === filter.code) return { ...off };
+          }
+        }
+        return null;
+      });
+
+      officeFindByIdMock = mock.method(Office, 'findById', async (id) => {
+        const off = day15OfficeStore.get(String(id));
+        return off ? { ...off } : null;
+      });
+
+      officeFindOneAndUpdateMock = mock.method(Office, 'findOneAndUpdate', async (filter, update) => {
+        for (const off of day15OfficeStore.values()) {
+          if (off.code === filter.code) {
+            Object.assign(off, update.$set);
+            return { ...off };
+          }
+        }
+        const created = {
+          _id: new mongoose.Types.ObjectId(),
+          ...update.$set
+        };
+        day15OfficeStore.set(String(created._id), created);
+        return { ...created };
+      });
+    }
+
+    function restoreDay15Mocks() {
+      if (lpFindOneMock) lpFindOneMock.mock.restore();
+      if (lpFindOneAndUpdateMock) lpFindOneAndUpdateMock.mock.restore();
+      if (lpFindMock) lpFindMock.mock.restore();
+      if (lpFindOneAndDeleteMock) lpFindOneAndDeleteMock.mock.restore();
+      if (lpDeleteManyMock) lpDeleteManyMock.mock.restore();
+
+      if (userFindOneMock) userFindOneMock.mock.restore();
+      if (userCreateMock) userCreateMock.mock.restore();
+      if (userFindByIdMock) userFindByIdMock.mock.restore();
+
+      if (officeFindOneMock) officeFindOneMock.mock.restore();
+      if (officeFindByIdMock) officeFindByIdMock.mock.restore();
+      if (officeFindOneAndUpdateMock) officeFindOneAndUpdateMock.mock.restore();
+    }
+
+    it('1. should validate complete end-to-end database workflow from registration to movement and cleanup', async () => {
+      setupDay15Mocks();
+      try {
+        // Step 1: User Registration
+        const user = await findOrCreateUser({
+          email: 'alice.day15@proxispeak.local',
+          displayName: 'Alice Day15',
+          avatarColor: '#10b981'
+        });
+        assert.ok(user._id, 'User must be created with valid ObjectId');
+        assert.strictEqual(user.displayName, 'Alice Day15');
+
+        // Step 2: Office Association
+        const office = await getOfficeByIdOrCode('office-01');
+        assert.ok(office, 'Default office must be resolved');
+        assert.strictEqual(office.code, 'office-01');
+
+        // Step 3: Initial LivePosition Creation
+        const initialPos = await upsertPosition({
+          userId: user._id,
+          officeId: office._id,
+          location: [500, 300],
+          socketId: 'sock_alice_e2e'
+        });
+        assert.ok(initialPos);
+        assert.deepStrictEqual(initialPos.location, [500, 300]);
+        assert.strictEqual(day15PositionStore.size, 1);
+
+        // Seed a stationary peer nearby at [525, 300] (25px away)
+        const peer = await findOrCreateUser({ email: 'bob.day15@proxispeak.local', displayName: 'Bob Day15' });
+        await upsertPosition({
+          userId: peer._id,
+          officeId: office._id,
+          location: [525, 300],
+          socketId: 'sock_bob_e2e'
+        });
+        assert.strictEqual(day15PositionStore.size, 2);
+
+        // Step 4: Updating X/Y Coordinates along Movement Trajectory
+        const waypoints = [
+          [505, 300],
+          [510, 300],
+          [515, 300],
+          [520, 300]
+        ];
+        for (const wp of waypoints) {
+          const res = await updatePosition(user._id, wp);
+          assert.deepStrictEqual(res.location, wp);
+        }
+        assert.strictEqual(day15PositionStore.size, 2, 'Store must still have strictly 2 records');
+
+        // Step 5: Proximity Query (Alice is at [520, 300], Bob is at [525, 300], distance = 5px)
+        const nearby = await getNearbyUsers({
+          officeId: office._id,
+          location: [520, 300],
+          radius: 100,
+          excludeUserId: user._id
+        });
+        assert.strictEqual(nearby.length, 1, 'Should find Bob within 5px proximity');
+        assert.strictEqual(String(nearby[0].userId), String(peer._id));
+        assert.strictEqual(nearby[0].distance, 5);
+        assert.ok(nearby[0].gain > 0.95, 'Audio volume must be near maximum at 5px');
+
+        // Step 6: Office Isolation Check (seed a user in office 2 at [520, 300])
+        const office2 = await getOfficeByIdOrCode('office-02');
+        const userOff2 = await findOrCreateUser({ email: 'charlie.day15@proxispeak.local', displayName: 'Charlie Off2' });
+        await upsertPosition({
+          userId: userOff2._id,
+          officeId: office2._id,
+          location: [520, 300],
+          socketId: 'sock_charlie_e2e'
+        });
+
+        const recheckNearby = await getNearbyUsers({
+          officeId: office._id,
+          location: [520, 300],
+          radius: 100
+        });
+        // recheckNearby should contain Alice and Bob, but strictly NOT Charlie
+        for (const p of recheckNearby) {
+          assert.notStrictEqual(String(p.userId), String(userOff2._id), 'Charlie from office-02 must be isolated');
+        }
+
+        // Step 7: Disconnect Cleanup
+        const removed = await removeBySocketId('sock_alice_e2e');
+        assert.ok(removed);
+        assert.strictEqual(String(removed.userId), String(user._id));
+        assert.strictEqual(await getUserPosition(user._id), null, 'Alice position must be deleted');
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('2. should enforce user-to-LivePosition and office-to-LivePosition relational integrity', () => {
+      const indexes = LivePosition.schema.indexes();
+
+      // Compound 2D index exists
+      const compound = indexes.find((idx) => idx[0] && idx[0].officeId === 1 && idx[0].location === '2d');
+      assert.ok(compound, 'Compound planar index must exist');
+
+      // Unique userId index
+      const userIdx = indexes.find((idx) => idx[0] && idx[0].userId === 1);
+      assert.ok(userIdx, 'userId index must exist');
+      assert.strictEqual(userIdx[1].unique, true, 'userId must be unique (1:1 mapping)');
+
+      // officeId index
+      const offIdx = indexes.find((idx) => idx[0] && idx[0].officeId === 1 && !idx[0].location);
+      assert.ok(offIdx, 'officeId single index must exist');
+
+      // Schema paths ref checks
+      const userPath = LivePosition.schema.path('userId');
+      assert.strictEqual(userPath.options.ref, 'User');
+      assert.strictEqual(userPath.options.required, true);
+
+      const officePath = LivePosition.schema.path('officeId');
+      assert.strictEqual(officePath.options.ref, 'Office');
+      assert.strictEqual(officePath.options.required, true);
+    });
+
+    it('3. should recover gracefully from concurrent user registration duplicate key race conditions in userService', async () => {
+      setupDay15Mocks();
+      try {
+        const email = 'race.registration@proxispeak.local';
+
+        // Fire 3 concurrent findOrCreateUser calls
+        const [u1, u2, u3] = await Promise.all([
+          findOrCreateUser({ email, displayName: 'User 1' }),
+          findOrCreateUser({ email, displayName: 'User 2' }),
+          findOrCreateUser({ email, displayName: 'User 3' })
+        ]);
+
+        assert.strictEqual(String(u1._id), String(u2._id));
+        assert.strictEqual(String(u2._id), String(u3._id));
+        assert.strictEqual(day15UserStore.size, 1, 'Only one user document must exist in store');
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('4. should create initial LivePosition idempotently and reject duplicate records on reconnect', async () => {
+      setupDay15Mocks();
+      try {
+        const testUserId = new mongoose.Types.ObjectId();
+
+        // Initial connect
+        const pos1 = await upsertPosition({
+          userId: testUserId,
+          officeId: day15Office1Id,
+          location: [500, 300],
+          socketId: 'sock_initial'
+        });
+        assert.strictEqual(day15PositionStore.size, 1);
+        assert.strictEqual(pos1.socketId, 'sock_initial');
+
+        // Reconnect with new socket ID
+        const pos2 = await upsertPosition({
+          userId: testUserId,
+          officeId: day15Office1Id,
+          location: [500, 300],
+          socketId: 'sock_reconnected'
+        });
+        assert.strictEqual(day15PositionStore.size, 1, 'Reconnection must not create duplicate LivePosition');
+        assert.strictEqual(String(pos2._id), String(pos1._id), 'Document _id must be preserved');
+        assert.strictEqual(pos2.socketId, 'sock_reconnected');
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('5. should handle repeated movement updates with sub-millisecond stationary write suppression', async () => {
+      setupDay15Mocks();
+      try {
+        const testUserId = new mongoose.Types.ObjectId();
+        await upsertPosition({
+          userId: testUserId,
+          officeId: day15Office1Id,
+          location: [100, 100],
+          socketId: 'sock_bench_stream'
+        });
+
+        // 10 continuous movement ticks
+        for (let i = 1; i <= 10; i++) {
+          const res = await updatePosition(testUserId, [100 + i * 2, 100 + i * 3]);
+          assert.deepStrictEqual(res.location, [100 + i * 2, 100 + i * 3]);
+        }
+
+        const writesAfterMove = day15WriteCount;
+        assert.ok(writesAfterMove >= 10);
+
+        // 50 stationary ticks (avatar halted)
+        for (let i = 0; i < 50; i++) {
+          const res = await updatePosition(testUserId, [120, 130]);
+          assert.deepStrictEqual(res.location, [120, 130]);
+        }
+        assert.strictEqual(day15WriteCount, writesAfterMove, 'All 50 stationary ticks must be suppressed');
+
+        // Delta tick
+        await updatePosition(testUserId, [120.2, 130]);
+        assert.strictEqual(day15WriteCount, writesAfterMove + 1, 'Movement must immediately trigger a write');
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('6. should calculate dynamic proximity, smoothstep gain, and stereo panning throughout avatar approach and departure', async () => {
+      setupDay15Mocks();
+      try {
+        const listenerId = new mongoose.Types.ObjectId();
+        const speakerId = new mongoose.Types.ObjectId();
+
+        day15UserStore.set(String(speakerId), {
+          _id: speakerId,
+          displayName: 'Speaker',
+          avatarColor: '#f59e0b',
+          isOnline: true
+        });
+
+        // Speaker stationary at [200, 200]
+        await upsertPosition({ userId: speakerId, officeId: day15Office1Id, location: [200, 200] });
+
+        // Step A: Listener far away at [400, 200] (dx = 200 > 100)
+        const nearbyA = await getNearbyUsers({
+          officeId: day15Office1Id,
+          location: [400, 200],
+          radius: 100,
+          excludeUserId: listenerId
+        });
+        assert.strictEqual(nearbyA.length, 0, 'Out of earshot');
+
+        // Step B: Listener approaches to [280, 200] (dx = 80px <= 100px)
+        const nearbyB = await getNearbyUsers({
+          officeId: day15Office1Id,
+          location: [280, 200],
+          radius: 100,
+          excludeUserId: listenerId
+        });
+        assert.strictEqual(nearbyB.length, 1);
+        assert.strictEqual(nearbyB[0].distance, 80);
+        assert.strictEqual(nearbyB[0].gain, 0.104);
+        assert.strictEqual(nearbyB[0].pan, -0.8); // Speaker is to the left (-X)
+
+        // Step C: Listener moves very close to [210, 200] (dx = 10px)
+        const nearbyC = await getNearbyUsers({
+          officeId: day15Office1Id,
+          location: [210, 200],
+          radius: 100,
+          excludeUserId: listenerId
+        });
+        assert.strictEqual(nearbyC.length, 1);
+        assert.strictEqual(nearbyC[0].distance, 10);
+        assert.ok(nearbyC[0].gain > 0.95);
+        assert.strictEqual(nearbyC[0].pan, -0.1);
+
+        // Step D: Listener at exact same coordinate [200, 200] (dx = 0px)
+        const nearbyD = await getNearbyUsers({
+          officeId: day15Office1Id,
+          location: [200, 200],
+          radius: 100,
+          excludeUserId: listenerId
+        });
+        assert.strictEqual(nearbyD.length, 1);
+        assert.strictEqual(nearbyD[0].distance, 0);
+        assert.strictEqual(nearbyD[0].gain, 1.0);
+        assert.strictEqual(nearbyD[0].pan, 0.0);
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('7. should enforce strict multi-office isolation with zero cross-office audio leakage', async () => {
+      setupDay15Mocks();
+      try {
+        const testCoords = [
+          [100, 100],
+          [200, 200],
+          [300, 300],
+          [400, 400],
+          [500, 500]
+        ];
+
+        // Seed 5 users in Office 1 and 5 users in Office 2 at the exact same coordinates
+        for (let i = 0; i < 5; i++) {
+          const uId1 = new mongoose.Types.ObjectId();
+          const uId2 = new mongoose.Types.ObjectId();
+
+          day15UserStore.set(String(uId1), { _id: uId1, displayName: `O1_Peer_${i}`, isOnline: true });
+          day15UserStore.set(String(uId2), { _id: uId2, displayName: `O2_Peer_${i}`, isOnline: true });
+
+          await upsertPosition({ userId: uId1, officeId: day15Office1Id, location: testCoords[i] });
+          await upsertPosition({ userId: uId2, officeId: day15Office2Id, location: testCoords[i] });
+        }
+
+        assert.strictEqual(day15PositionStore.size, 10);
+
+        // Query Office 1
+        const off1Positions = await getOfficePositions(day15Office1Id);
+        assert.strictEqual(off1Positions.length, 5);
+        for (const p of off1Positions) {
+          assert.ok(p.displayName.startsWith('O1_'));
+        }
+
+        // Query Office 2
+        const off2Positions = await getOfficePositions(day15Office2Id);
+        assert.strictEqual(off2Positions.length, 5);
+        for (const p of off2Positions) {
+          assert.ok(p.displayName.startsWith('O2_'));
+        }
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('8. should reject invalid and out-of-boundary coordinates across all operations before database execution', async () => {
+      setupDay15Mocks();
+      try {
+        const dummyUser = new mongoose.Types.ObjectId();
+
+        // Negative coordinate validation
+        await assert.rejects(async () => await upsertPosition({ userId: dummyUser, officeId: day15Office1Id, location: [-1, 50] }), /Coordinates must be non-negative/);
+        await assert.rejects(async () => await updatePosition(dummyUser, [50, -0.01]), /Coordinates must be non-negative/);
+
+        // Non-finite / NaN coordinate validation
+        await assert.rejects(async () => await updatePosition(dummyUser, [NaN, 100]), /Coordinates x and y must be finite numbers/);
+        await assert.rejects(async () => await updatePosition(dummyUser, [100, Infinity]), /Coordinates x and y must be finite numbers/);
+
+        // Malformed structure
+        await assert.rejects(async () => await updatePosition(dummyUser, null), /Location must be a 2-element array/);
+        await assert.rejects(async () => await updatePosition(dummyUser, [50]), /Location must be a 2-element array/);
+        await assert.rejects(async () => await updatePosition(dummyUser, [50, 50, 50]), /Location must be a 2-element array/);
+
+        // Canvas boundary validation when bounds checking is enabled
+        await assert.rejects(
+          async () => await updatePosition(dummyUser, [1001, 300], { validateBounds: true }),
+          /X coordinate \(1001\) exceeds office width \(1000\)/
+        );
+        await assert.rejects(
+          async () => await updatePosition(dummyUser, [500, 601], { validateBounds: true }),
+          /Y coordinate \(601\) exceeds office height \(600\)/
+        );
+
+        assert.strictEqual(day15PositionStore.size, 0, 'Store must remain completely empty');
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('9. should handle database driver and network failures gracefully without corrupting persisted state', async () => {
+      setupDay15Mocks();
+      try {
+        const user = new mongoose.Types.ObjectId();
+        await upsertPosition({ userId: user, officeId: day15Office1Id, location: [200, 200] });
+
+        // Simulate driver connection failure
+        lpFindOneMock.mock.mockImplementationOnce(async () => {
+          throw new Error('MongoServerSelectionError: connection timed out');
+        });
+
+        await assert.rejects(
+          async () => await updatePosition(user, [250, 250]),
+          /MongoServerSelectionError/
+        );
+
+        // State remains intact
+        const pos = day15PositionStore.get(String(user));
+        assert.deepStrictEqual(pos.location, [200, 200]);
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+
+    it('10. should perform comprehensive position lifecycle cleanup via socket, user, and age-based reaping', async () => {
+      setupDay15Mocks();
+      try {
+        const u1 = new mongoose.Types.ObjectId();
+        const u2 = new mongoose.Types.ObjectId();
+        const u3 = new mongoose.Types.ObjectId();
+
+        await upsertPosition({ userId: u1, officeId: day15Office1Id, location: [100, 100], socketId: 'sock_cleanup_1' });
+        await upsertPosition({ userId: u2, officeId: day15Office1Id, location: [200, 200], socketId: 'sock_cleanup_2' });
+        await upsertPosition({ userId: u3, officeId: day15Office2Id, location: [300, 300], socketId: 'sock_cleanup_3' });
+
+        assert.strictEqual(day15PositionStore.size, 3);
+
+        // Disconnect user 1 via socket
+        const removedSocket = await removeBySocketId('sock_cleanup_1');
+        assert.ok(removedSocket);
+        assert.strictEqual(String(removedSocket.userId), String(u1));
+        assert.strictEqual(day15PositionStore.size, 2);
+
+        // Explicit user 2 leave
+        const removedUser = await removeUserPosition(u2);
+        assert.ok(removedUser);
+        assert.strictEqual(String(removedUser.userId), String(u2));
+        assert.strictEqual(day15PositionStore.size, 1);
+
+        // User 3 becomes stale (set timestamp to 10 mins ago)
+        const doc3 = day15PositionStore.get(String(u3));
+        doc3.lastUpdated = new Date(Date.now() - 10 * 60 * 1000);
+
+        // Prune stale positions older than 5 minutes
+        const reap = await removeStalePositions(300000);
+        assert.strictEqual(reap.deletedCount, 1);
+        assert.strictEqual(day15PositionStore.size, 0);
+      } finally {
+        restoreDay15Mocks();
+      }
+    });
+  });
 });

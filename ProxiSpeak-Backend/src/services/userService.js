@@ -14,14 +14,23 @@ async function findOrCreateUser({
 
   let user = await User.findOne({ email: normalizedEmail });
   if (!user) {
-    user = await User.create({
-      email: normalizedEmail,
-      displayName: displayName.trim(),
-      avatarColor,
-      avatarUrl,
-      isOnline: true,
-      lastActive: new Date()
-    });
+    try {
+      user = await User.create({
+        email: normalizedEmail,
+        displayName: displayName.trim(),
+        avatarColor,
+        avatarUrl,
+        isOnline: true,
+        lastActive: new Date()
+      });
+    } catch (err) {
+      if (err && err.code === 11000) {
+        // Race condition recovery: concurrent creation with same email completed first
+        user = await User.findOne({ email: normalizedEmail });
+      } else {
+        throw err;
+      }
+    }
   }
   return user;
 }
