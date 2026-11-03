@@ -10,6 +10,8 @@ const bcrypt = require("bcryptjs");
 const app = require("../src/app");
 const connectDB = require("../src/config/database");
 const User = require("../src/models/User");
+const Office = require("../src/models/Office");
+const Position = require("../src/models/Position");
 
 describe("REST API Integration Tests", () => {
   let server;
@@ -26,23 +28,24 @@ describe("REST API Integration Tests", () => {
   });
 
   after(async () => {
-  if (server) {
-    const closePromise = new Promise((resolve) => {
-      server.close(resolve);
-    });
+    if (server) {
+      const closePromise = new Promise((resolve) => {
+        server.close(resolve);
+      });
 
-    server.closeIdleConnections?.();
-    server.closeAllConnections?.();
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
 
-    await closePromise;
-  }
+      await closePromise;
+    }
 
-  if (app.locals.sessionStore) {
-    await app.locals.sessionStore.close();
-  }
+    if (app.locals.sessionStore) {
+      await app.locals.sessionStore.close();
+    }
 
-  await mongoose.disconnect();
-});
+    await mongoose.disconnect();
+  });
+
   // BASIC API TESTS
 
   it("GET / should return 200 and project info", async () => {
@@ -232,7 +235,6 @@ describe("REST API Integration Tests", () => {
         passwordHash,
       });
 
-      // Login
       const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -246,7 +248,6 @@ describe("REST API Integration Tests", () => {
 
       const sessionCookie = cookieHeader.split(";")[0];
 
-      // Verify session
       const meRes = await fetch(`${baseUrl}/api/auth/me`, {
         headers: { Cookie: sessionCookie },
       });
@@ -255,12 +256,8 @@ describe("REST API Integration Tests", () => {
 
       const meData = await meRes.json();
       assert.strictEqual(meData.data.email, email);
-      assert.strictEqual(
-        meData.data.displayName,
-        "Session Test User"
-      );
+      assert.strictEqual(meData.data.displayName, "Session Test User");
 
-      // Logout
       const logoutRes = await fetch(`${baseUrl}/api/auth/logout`, {
         method: "POST",
         headers: {
@@ -272,7 +269,6 @@ describe("REST API Integration Tests", () => {
 
       assert.strictEqual(logoutRes.status, 200);
 
-      // Verify old session is rejected
       const afterLogoutRes = await fetch(`${baseUrl}/api/auth/me`, {
         headers: { Cookie: sessionCookie },
       });
@@ -360,29 +356,29 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(data.message, "Route not found");
   });
 
-  it("POST /api/positions with invalid coordinates should return 400", async () => {
+    it("POST /api/positions with invalid coordinates should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userId: "507f1f77bcf86cd799439011",
+        userId: new mongoose.Types.ObjectId().toString(),
         x: "invalid",
         y: 100,
       }),
     });
 
     assert.strictEqual(res.status, 400);
-
     const data = await res.json();
     assert.strictEqual(data.status, "error");
   });
 
-  it("POST /api/positions with a non-existing user should return 404", async () => {
+  // OFFICE DATABASE PERSISTENCE TESTS
+    it("POST /api/positions with a non-existing user should return 404", async () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userId: "507f1f77bcf86cd799439011",
+        userId: new mongoose.Types.ObjectId().toString(),
         x: 100,
         y: 100,
       }),
@@ -419,6 +415,7 @@ describe("REST API Integration Tests", () => {
       assert.strictEqual(data.data.x, 150);
       assert.strictEqual(data.data.y, 200);
     } finally {
+      await Position.deleteOne({ userId: user._id });
       await User.deleteOne({ _id: user._id });
     }
   });
@@ -436,6 +433,61 @@ describe("REST API Integration Tests", () => {
       assert.strictEqual(res.status, 404);
     } finally {
       await User.deleteOne({ _id: user._id });
+    }
+  });
+  it("POST /api/offices should save an office and GET should retrieve it", async () => {
+    const officeName = `Persistence Test Office ${Date.now()}`;
+    let officeId;
+
+    try {
+      const createRes = await fetch(`${baseUrl}/api/offices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: officeName,
+          width: 1200,
+          height: 800,
+        }),
+      });
+
+      assert.strictEqual(createRes.status, 201);
+      const created = await createRes.json();
+
+      assert.strictEqual(created.data.name, officeName);
+      assert.strictEqual(created.data.width, 1200);
+      assert.strictEqual(created.data.height, 800);
+
+      officeId = created.data._id;
+      assert.ok(officeId);
+
+      const getRes = await fetch(`${baseUrl}/api/offices/${officeId}`);
+      assert.strictEqual(getRes.status, 200);
+
+      const retrieved = await getRes.json();
+      assert.strictEqual(retrieved.data._id, officeId);
+      assert.strictEqual(retrieved.data.name, officeName);
+    } finally {
+      if (officeId) {
+        await Office.deleteOne({ _id: officeId });
+      }
+    }
+  });
+
+  it("GET /api/offices should return saved offices", async () => {
+    const office = await Office.create({
+      name: `List Test Office ${Date.now()}`,
+    });
+
+    try {
+      const res = await fetch(`${baseUrl}/api/offices`);
+      assert.strictEqual(res.status, 200);
+
+      const data = await res.json();
+      assert.ok(
+        data.data.some((item) => item._id === office._id.toString())
+      );
+    } finally {
+      await Office.deleteOne({ _id: office._id });
     }
   });
 });
