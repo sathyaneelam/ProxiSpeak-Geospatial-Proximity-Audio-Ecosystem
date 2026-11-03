@@ -426,18 +426,42 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     }
   });
 
-  test('reports WebRTC connection-state changes for the peer', () => {
+  test('reports and deduplicates structured WebRTC connection-state diagnostics', () => {
     const reportedStates = [];
+    const diagnostics = [];
+    const originalConsoleInfo = console.info;
+    console.info = (...args) => diagnostics.push(args);
     const manager = new WebRTCPeerManager({
       localUserId: 'local-1',
       onPeerConnectionState: (peerId, state) => reportedStates.push({ peerId, state }),
     });
-    const session = manager.getOrCreatePeer('remote-1');
 
-    session.pc.connectionState = 'connected';
-    session.pc.onconnectionstatechange();
+    try {
+      const session = manager.getOrCreatePeer('remote-1');
+      session.pc.connectionState = 'connected';
+      session.pc.onconnectionstatechange();
+      session.pc.onconnectionstatechange();
 
-    assert.deepEqual(reportedStates, [{ peerId: 'remote-1', state: 'connected' }]);
+      assert.deepEqual(reportedStates, [
+        { peerId: 'remote-1', state: 'connected' },
+        { peerId: 'remote-1', state: 'connected' },
+      ]);
+      assert.equal(diagnostics.length, 1);
+      assert.deepEqual(diagnostics[0], [
+        '[WebRTCPeerManager]',
+        {
+          component: 'WebRTCPeerManager',
+          event: 'connection_state_changed',
+          peerId: 'remote-1',
+          previousState: 'new',
+          state: 'connected',
+          iceConnectionState: 'new',
+        },
+      ]);
+    } finally {
+      manager.destroy();
+      console.info = originalConsoleInfo;
+    }
   });
 
   test('isolates a failed peer and callback exceptions from other connections', async () => {
@@ -468,6 +492,13 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
   });
 
   test('retries when ICE fails even if the aggregate connection state has not changed', async () => {
+    const diagnostics = [];
+    const originalConsoleInfo = console.info;
+    const originalConsoleWarn = console.warn;
+    const originalConsoleError = console.error;
+    console.info = (...args) => diagnostics.push(args);
+    console.warn = (...args) => diagnostics.push(args);
+    console.error = (...args) => diagnostics.push(args);
     const manager = new WebRTCPeerManager({
       localUserId: 'local-1',
       reconnectDelays: [5],
@@ -477,10 +508,126 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
     try {
       session.pc.iceConnectionState = 'failed';
       session.pc.oniceconnectionstatechange();
+      session.pc.oniceconnectionstatechange();
       await waitFor(() => manager.peers.get('remote-ice-failed') !== session);
       assert.notEqual(manager.peers.get('remote-ice-failed'), session);
+
+      const entries = diagnostics.map(([, entry]) => entry);
+      assert.equal(
+        entries.filter((entry) => entry.event === 'ice_connection_failed').length,
+        1
+      );
+      assert.ok(entries.some((entry) =>
+        entry.event === 'ice_connection_failed' &&
+        entry.peerId === 'remote-ice-failed' &&
+        entry.state === 'failed'
+      ));
+      assert.ok(entries.some((entry) =>
+        entry.event === 'reconnect_scheduled' &&
+        entry.peerId === 'remote-ice-failed' &&
+        entry.attempt === 1 &&
+        entry.reason === 'ice_failed'
+      ));
+      assert.ok(entries.some((entry) =>
+        entry.event === 'reconnect_attempt_started' &&
+        entry.peerId === 'remote-ice-failed'
+      ));
     } finally {
       manager.destroy();
+      console.info = originalConsoleInfo;
+      console.warn = originalConsoleWarn;
+      console.error = originalConsoleError;
+    }
+  });
+
+  test('logs unsuccessful connection attempts without exposing exception objects', async () => {
+    const diagnostics = [];
+    const originalConsoleError = console.error;
+    console.error = (...args) => diagnostics.push(args);
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [100],
+    });
+    const session = manager.getOrCreatePeer('remote-attempt');
+    session.pc.createOffer = () =>
+      Promise.reject(new TypeError('Offer creation failed'));
+
+    try {
+      await manager.initiateConnection('remote-attempt');
+      const entry = diagnostics.find(([, details]) =>
+        details?.event === 'connection_attempt_failed'
+      )?.[1];
+
+      assert.deepEqual(entry, {
+        component: 'WebRTCPeerManager',
+        event: 'connection_attempt_failed',
+        peerId: 'remote-attempt',
+        errorName: 'TypeError',
+        errorMessage: 'Offer creation failed',
+      });
+      assert.ok(diagnostics.every(([, details]) => !(details instanceof Error)));
+    } finally {
+      manager.destroy();
+      console.error = originalConsoleError;
+    }
+  });
+
+  test('logs signaling rejections with peer and error details only', () => {
+    const diagnostics = [];
+    const originalConsoleError = console.error;
+    console.error = (...args) => diagnostics.push(args);
+    const transport = new MockSignalingTransport('local-1');
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      signalingTransport: transport,
+    });
+
+    try {
+      const rejection = {
+        code: 'PEER_UNAVAILABLE',
+        message: 'Peer is unavailable',
+        targetUserId: 'remote-1',
+        sdp: 'sensitive-session-description',
+      };
+      transport.emit('webrtc:error', rejection);
+      transport.emit('webrtc:error', rejection);
+
+      assert.equal(diagnostics.length, 1, 'Repeated signaling rejections are rate-limited');
+      assert.deepEqual(diagnostics[0], [
+        '[WebRTCPeerManager]',
+        {
+          component: 'WebRTCPeerManager',
+          event: 'signaling_rejected',
+          peerId: 'remote-1',
+          code: 'PEER_UNAVAILABLE',
+        },
+      ]);
+      assert.equal(JSON.stringify(diagnostics).includes('sensitive-session-description'), false);
+    } finally {
+      manager.destroy();
+      console.error = originalConsoleError;
+    }
+  });
+
+  test('a failing diagnostic logger does not interrupt peer recovery', async () => {
+    const originalConsoleError = console.error;
+    console.error = () => {
+      throw new Error('Logger unavailable');
+    };
+    const manager = new WebRTCPeerManager({
+      localUserId: 'local-1',
+      reconnectDelays: [5],
+    });
+    const session = manager.getOrCreatePeer('remote-log-failure');
+
+    try {
+      session.pc.connectionState = 'failed';
+      session.pc.onconnectionstatechange();
+      await waitFor(() => manager.peers.get('remote-log-failure') !== session);
+      assert.notEqual(manager.peers.get('remote-log-failure'), session);
+    } finally {
+      manager.destroy();
+      console.error = originalConsoleError;
     }
   });
 

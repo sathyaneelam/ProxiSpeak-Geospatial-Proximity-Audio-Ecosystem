@@ -187,6 +187,12 @@ Audio parameters are scheduled using `setTargetAtTime(target, currentTime, 0.05)
   - `AudioContext` is closed.
 - **HTTPS / Localhost Requirement:** Browsers require a secure context (`window.isSecureContext` — HTTPS or `http://localhost`) to access `navigator.mediaDevices.getUserMedia`.
 
+### WebRTC Connection Diagnostics
+
+The peer manager writes structured browser-console entries for connection and ICE state transitions, failed negotiations, signaling rejections, and scheduled or exhausted reconnection attempts. Each entry uses the `[WebRTCPeerManager]` prefix and includes an event name plus a peer ID when available. Repeated state notifications are logged once per state transition.
+
+Diagnostics include bounded exception names/messages and signaling error codes; they do not include SDP, ICE candidates, TURN credentials, or raw exception objects. Logging is isolated so a console/logger failure cannot interrupt signaling or peer cleanup.
+
 ---
 
 ## 6. Manual Testing Procedures

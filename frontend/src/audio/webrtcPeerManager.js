@@ -1,4 +1,5 @@
 import {
+  SIGNALING_EVENTS,
   isValidSdpDescription,
   isValidUserId,
 } from './signalingContract.js';
@@ -93,6 +94,19 @@ function isPeerEventInOffice(payload, officeId) {
   );
 }
 
+function getErrorDetails(error) {
+  const name = typeof error?.name === 'string' ? error.name.slice(0, 80) : null;
+  const message =
+    typeof error?.message === 'string' ? error.message.slice(0, 240) :
+      typeof error === 'string' ? error.slice(0, 240) :
+        null;
+
+  return {
+    ...(name ? { errorName: name } : {}),
+    ...(message ? { errorMessage: message } : {}),
+  };
+}
+
 export class WebRTCPeerManager {
   /**
    * @param {Object} options
@@ -130,6 +144,7 @@ export class WebRTCPeerManager {
     this.reconnectAttempts = new Map();
     this.reconnectTimers = new Map();
     this.disconnectTimers = new Map();
+    this.signalingDiagnosticTimes = new Map();
     this.localStream = null;
     this.unsubSignaling = [];
     this.destroyed = false;
@@ -180,6 +195,32 @@ export class WebRTCPeerManager {
             void this.initiateConnection(peerId);
           }
         }
+      })
+    );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on('error', (payload) => {
+        this._logSignalingDiagnostic(
+          'signaling_connection_failed',
+          null,
+          getErrorDetails(payload?.error)
+        );
+      })
+    );
+
+    this.unsubSignaling.push(
+      this.signalingTransport.on(SIGNALING_EVENTS.WEBRTC_ERROR, (payload) => {
+        const peerId = [
+          payload?.peerId,
+          payload?.fromUserId,
+          payload?.from,
+          payload?.targetUserId,
+          payload?.targetSocketId,
+          payload?.target,
+        ].find((id) => isValidUserId(id) && id.trim() !== this.localUserId)?.trim() || null;
+        this._logSignalingDiagnostic('signaling_rejected', peerId, {
+          ...(typeof payload?.code === 'string' ? { code: payload.code.slice(0, 80) } : {}),
+        });
       })
     );
 
@@ -342,6 +383,9 @@ export class WebRTCPeerManager {
       seenRemoteOffers: new Set(),
       iceCandidateBuffer: [],
       seenRemoteCandidates: new Set(),
+      lastConnectionState: pc.connectionState,
+      lastIceConnectionState: pc.iceConnectionState,
+      lastDiagnosticFailure: null,
       remoteStream: new MediaStream(),
     };
 
@@ -383,8 +427,8 @@ export class WebRTCPeerManager {
           });
         }
       } catch (err) {
-        console.error(`[WebRTCPeerManager] Error on negotiationneeded for ${peerId}:`, err);
-        this._scheduleReconnect(peerId, session);
+        this._logPeerFailure(session, 'negotiation_failed', peerId, err);
+        this._scheduleReconnect(peerId, session, 'negotiation_failed');
       } finally {
         session.makingOffer = false;
       }
@@ -399,7 +443,7 @@ export class WebRTCPeerManager {
             candidate: event.candidate,
           });
         } catch (err) {
-          console.error(`[WebRTCPeerManager] Error sending ICE candidate to ${peerId}:`, err);
+          this._logPeerFailure(session, 'ice_candidate_send_failed', peerId, err);
         }
       }
     };
@@ -418,6 +462,20 @@ export class WebRTCPeerManager {
     pc.onconnectionstatechange = () => {
       if (this.destroyed || this.peers.get(peerId) !== session) return;
       const state = pc.connectionState;
+      if (state !== session.lastConnectionState) {
+        const previousState = session.lastConnectionState;
+        session.lastConnectionState = state;
+        this._logDiagnostic(
+          state === 'failed' ? 'error' : 'info',
+          state === 'failed' ? 'connection_failed' : 'connection_state_changed',
+          peerId,
+          {
+            previousState,
+            state,
+            iceConnectionState: pc.iceConnectionState,
+          }
+        );
+      }
       this._notifyPeerCallback(
         'onPeerConnectionState',
         this.onPeerConnectionState,
@@ -433,7 +491,7 @@ export class WebRTCPeerManager {
         this._scheduleDisconnectRecovery(peerId, session);
       } else if (state === 'failed') {
         this._clearDisconnectTimer(peerId);
-        this._scheduleReconnect(peerId, session);
+        this._scheduleReconnect(peerId, session, 'connection_failed');
       } else if (state === 'closed') {
         this.closePeer(peerId);
       }
@@ -441,14 +499,29 @@ export class WebRTCPeerManager {
 
     pc.oniceconnectionstatechange = () => {
       if (!this._isCurrentSession(peerId, session)) return;
-      if (pc.iceConnectionState === 'failed') {
+      const state = pc.iceConnectionState;
+      if (state !== session.lastIceConnectionState) {
+        const previousState = session.lastIceConnectionState;
+        session.lastIceConnectionState = state;
+        this._logDiagnostic(
+          state === 'failed' ? 'error' : 'info',
+          state === 'failed' ? 'ice_connection_failed' : 'ice_connection_state_changed',
+          peerId,
+          {
+            previousState,
+            state,
+            connectionState: pc.connectionState,
+          }
+        );
+      }
+      if (state === 'failed') {
         this._clearDisconnectTimer(peerId);
-        this._scheduleReconnect(peerId, session);
-      } else if (pc.iceConnectionState === 'disconnected') {
+        this._scheduleReconnect(peerId, session, 'ice_failed');
+      } else if (state === 'disconnected') {
         this._scheduleDisconnectRecovery(peerId, session);
       } else if (
-        pc.iceConnectionState === 'connected' ||
-        pc.iceConnectionState === 'completed'
+        state === 'connected' ||
+        state === 'completed'
       ) {
         this._clearDisconnectTimer(peerId);
       }
@@ -488,8 +561,8 @@ export class WebRTCPeerManager {
           });
         }
       } catch (err) {
-        console.error(`[WebRTCPeerManager] initiateConnection error for ${peerId}:`, err);
-        this._scheduleReconnect(peerId, session);
+        this._logPeerFailure(session, 'connection_attempt_failed', peerId, err);
+        this._scheduleReconnect(peerId, session, 'connection_attempt_failed');
       } finally {
         session.makingOffer = false;
       }
@@ -568,9 +641,9 @@ export class WebRTCPeerManager {
         });
       }
     } catch (err) {
-      console.error(`[WebRTCPeerManager] Error handling offer from ${fromPeerId}:`, err);
+      this._logPeerFailure(session, 'remote_offer_failed', fromPeerId, err);
       session.pendingRemoteOffer = null;
-      this._scheduleReconnect(fromPeerId, session);
+      this._scheduleReconnect(fromPeerId, session, 'remote_offer_failed');
     } finally {
       session.handlingRemoteOffer = false;
       session.currentRemoteOfferSdp = null;
@@ -616,8 +689,8 @@ export class WebRTCPeerManager {
       if (!this._isCurrentSession(fromPeerId, session)) return;
       await this._drainIceCandidateBuffer(session);
     } catch (err) {
-      console.error(`[WebRTCPeerManager] Error setting remote answer from ${fromPeerId}:`, err);
-      this._scheduleReconnect(fromPeerId, session);
+      this._logPeerFailure(session, 'remote_answer_failed', fromPeerId, err);
+      this._scheduleReconnect(fromPeerId, session, 'remote_answer_failed');
     } finally {
       session.isSettingRemoteAnswerPending = false;
     }
@@ -751,6 +824,48 @@ export class WebRTCPeerManager {
     }
   }
 
+  _logDiagnostic(level, event, peerId, details = {}) {
+    try {
+      const log = console[level];
+      if (typeof log !== 'function') return;
+      log.call(console, '[WebRTCPeerManager]', {
+        component: 'WebRTCPeerManager',
+        event,
+        ...(peerId ? { peerId } : {}),
+        ...details,
+      });
+    } catch {
+      // Diagnostics must never interfere with signaling or peer cleanup.
+    }
+  }
+
+  _logPeerFailure(session, event, peerId, error) {
+    const errorDetails = getErrorDetails(error);
+    const failureKey = JSON.stringify([event, errorDetails.errorName, errorDetails.errorMessage]);
+    if (session.lastDiagnosticFailure === failureKey) return;
+    session.lastDiagnosticFailure = failureKey;
+    this._logDiagnostic('error', event, peerId, errorDetails);
+  }
+
+  _logSignalingDiagnostic(event, peerId, details) {
+    const key = JSON.stringify([
+      event,
+      peerId,
+      details.code || details.errorName || details.errorMessage || null,
+    ]);
+    const now = Date.now();
+    const lastLoggedAt = this.signalingDiagnosticTimes.get(key);
+    if (lastLoggedAt !== undefined && now - lastLoggedAt < 5000) return;
+
+    this.signalingDiagnosticTimes.set(key, now);
+    if (this.signalingDiagnosticTimes.size > 100) {
+      const oldestKey = this.signalingDiagnosticTimes.keys().next().value;
+      this.signalingDiagnosticTimes.delete(oldestKey);
+    }
+
+    this._logDiagnostic('error', event, peerId, details);
+  }
+
   _scheduleDisconnectRecovery(peerId, session) {
     if (this.disconnectTimers.has(peerId)) return;
 
@@ -761,13 +876,13 @@ export class WebRTCPeerManager {
         (session.pc.connectionState === 'disconnected' ||
           session.pc.iceConnectionState === 'disconnected')
       ) {
-        this._scheduleReconnect(peerId, session);
+        this._scheduleReconnect(peerId, session, 'disconnect_grace_period_elapsed');
       }
     }, this.disconnectGracePeriod);
     this.disconnectTimers.set(peerId, timer);
   }
 
-  _scheduleReconnect(peerId, session) {
+  _scheduleReconnect(peerId, session, reason = 'connection_failure') {
     if (
       this.destroyed ||
       !this.desiredPeers.has(peerId) ||
@@ -779,11 +894,22 @@ export class WebRTCPeerManager {
 
     const attempt = this.reconnectAttempts.get(peerId) || 0;
     if (attempt >= this.reconnectDelays.length) {
+      this._logDiagnostic('error', 'reconnect_exhausted', peerId, {
+        attempts: attempt,
+        maxAttempts: this.reconnectDelays.length,
+        reason,
+      });
       this.closePeer(peerId);
       return;
     }
 
     this.reconnectAttempts.set(peerId, attempt + 1);
+    this._logDiagnostic('warn', 'reconnect_scheduled', peerId, {
+      attempt: attempt + 1,
+      maxAttempts: this.reconnectDelays.length,
+      delayMs: this.reconnectDelays[attempt],
+      reason,
+    });
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(peerId);
       if (
@@ -794,6 +920,10 @@ export class WebRTCPeerManager {
         return;
       }
 
+      this._logDiagnostic('info', 'reconnect_attempt_started', peerId, {
+        attempt: attempt + 1,
+        maxAttempts: this.reconnectDelays.length,
+      });
       this._closePeerSession(peerId, session);
       void this.initiateConnection(peerId);
     }, this.reconnectDelays[attempt]);

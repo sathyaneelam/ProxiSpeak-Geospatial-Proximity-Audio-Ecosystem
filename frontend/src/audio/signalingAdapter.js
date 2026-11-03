@@ -211,6 +211,14 @@ export class SocketIOSignalingTransport extends BaseSignalingTransport {
       );
     });
 
+    bind(SIGNALING_EVENTS.WEBRTC_ERROR, (data) => {
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        console.warn('[SignalingTransport] Ignoring invalid WebRTC error payload.');
+        return;
+      }
+      this.emitLocal(SIGNALING_EVENTS.WEBRTC_ERROR, data);
+    });
+
     // Voice room presence
     bind(SIGNALING_EVENTS.VOICE_USER_JOINED, (data) => {
       this._emitValidPresencePayload(SIGNALING_EVENTS.VOICE_USER_JOINED, data);

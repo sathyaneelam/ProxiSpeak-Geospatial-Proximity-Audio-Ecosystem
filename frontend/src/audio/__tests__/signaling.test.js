@@ -199,10 +199,44 @@ describe('Signaling Contract & Adapter - Event Payloads and Validation', () => {
     });
 
     transport._bindSocketEvents();
-    assert.equal(socketHandlers.size, 9, 'Socket event handlers should only be bound once.');
+    assert.equal(socketHandlers.size, 10, 'Socket event handlers should only be bound once.');
     transport.disconnect();
     assert.equal(socketHandlers.size, 0);
     assert.equal(disconnectCount, 1);
+  });
+
+  test('Socket.IO transport forwards valid WebRTC server error events', () => {
+    const transport = new SocketIOSignalingTransport();
+    const socketHandlers = new Map();
+    transport.socket = {
+      connected: true,
+      on(event, handler) {
+        socketHandlers.set(event, handler);
+      },
+      off(event, handler) {
+        if (socketHandlers.get(event) === handler) socketHandlers.delete(event);
+      },
+      emit() {},
+      disconnect() {},
+    };
+    transport.userId = 'local';
+    transport.officeId = 'office';
+    transport._bindSocketEvents();
+    const received = [];
+    transport.on(SIGNALING_EVENTS.WEBRTC_ERROR, (payload) => received.push(payload));
+
+    socketHandlers.get(SIGNALING_EVENTS.WEBRTC_ERROR)({
+      code: 'PEER_UNAVAILABLE',
+      message: 'Peer is unavailable',
+      targetUserId: 'remote',
+    });
+
+    assert.deepEqual(received, [{
+      code: 'PEER_UNAVAILABLE',
+      message: 'Peer is unavailable',
+      targetUserId: 'remote',
+    }]);
+    transport.disconnect();
   });
 
   test('Socket.IO transport drops malformed, self, and misrouted signaling messages', () => {
