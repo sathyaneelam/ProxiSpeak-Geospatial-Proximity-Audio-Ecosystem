@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { formatRoomCode } from './meeting/roomCodes.js'
 
 import './App.css'
 import './CampusExperience.css'
@@ -33,6 +34,9 @@ const OFFICE_ID = (() => {
   const normalized = raw.toUpperCase().replace(/-/g, '')
   return /^[A-HJ-NP-Z2-9]{8}$/.test(normalized) ? `meeting-${normalized}` : 'office-01'
 })()
+const ROOM_CODE =
+  formatRoomCode(new URLSearchParams(window.location.search).get('room') || '') ||
+  'OFFICE-01'
 
 const AVATAR_COLORS = ['#22d3ee', '#a78bfa', '#fb7185', '#34d399', '#fbbf24', '#60a5fa']
 
@@ -229,6 +233,7 @@ function App() {
 
 
   const [position, setPosition] = useState({ x: 1000, y: 600 })
+  const [roomCodeCopied, setRoomCodeCopied] = useState(false)
   const [hoveredPeer, setHoveredPeer] = useState(null)
   const [isImmersiveMode, setIsImmersiveMode] = useState(false)
   const [presentationMode, setPresentationMode] = useState(false)
@@ -240,7 +245,19 @@ function App() {
 
 
 
+  async function copyRoomCode() {
+    try {
+      await navigator.clipboard.writeText(ROOM_CODE)
+      setRoomCodeCopied(true)
+      window.setTimeout(() => setRoomCodeCopied(false), 1800)
+    } catch {
+      setWalkNotice('Unable to copy room code. Please copy it manually.')
+    }
+  }
+
   function saveName(event) {
+
+      
 
     event.preventDefault()
 
@@ -1241,6 +1258,18 @@ function App() {
                   <span className="campus-brand-name">PROXISPEAK</span>
                   <span className="campus-brand-slash">/</span>
                   <span className="campus-brand-space">{currentRoom === 'CORRIDOR' ? 'OFFICE HQ' : currentRoom}</span>
+                </div>
+                <div className="campus-room-code">
+                  <span className="campus-room-label">ROOM CODE</span>
+                  <strong>{ROOM_CODE}</strong>
+                  <button
+                    type="button"
+                    onClick={copyRoomCode}
+                    aria-label="Copy room code"
+                    title="Copy room code"
+                  >
+                    {roomCodeCopied ? 'COPIED' : 'COPY'}
+                  </button>
                 </div>
                 <div className="campus-live-badge" aria-label={connectionLabel}>
                   <span className={joinedOffice ? 'campus-online-light' : 'campus-offline-light'} />

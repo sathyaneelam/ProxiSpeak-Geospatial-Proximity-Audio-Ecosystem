@@ -267,3 +267,58 @@
 .app-shell.campus-v2 .campus-room-inspector { max-width: min(235px, 30vw); }
 .app-shell.campus-v2 .campus-hud-bottom { z-index: 7; }
 .app-shell.campus-v2 .day7-minimap svg { aspect-ratio: 5 / 3; }
+
+
+/* Room code chip with copy action */
+.app-shell.campus-v2 .campus-room-code {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 10px;
+  background: rgba(15,25,22,.92);
+  color: #fff;
+  font-size: 11px;
+  pointer-events: auto;
+  white-space: nowrap;
+  backdrop-filter: blur(12px);
+}
+
+.app-shell.campus-v2 .campus-room-label {
+  color: #a8b9ad;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.app-shell.campus-v2 .campus-room-code strong {
+  color: #d9f99d;
+  font-size: 12px;
+  letter-spacing: .08em;
+}
+
+.app-shell.campus-v2 .campus-room-code button {
+  border: 1px solid rgba(217,249,157,.35);
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: rgba(217,249,157,.12);
+  color: #d9f99d;
+  font-size: 9px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.app-shell.campus-v2 .campus-room-code button:hover {
+  background: rgba(217,249,157,.22);
+}
+
+@media(max-width:600px) {
+  .app-shell.campus-v2 .campus-room-code {
+    gap: 5px;
+    padding: 6px;
+  }
+  .app-shell.campus-v2 .campus-room-label {
+    display: none;
+  }
+}
