@@ -13,7 +13,7 @@ const errorHandler = require("./middleware/errorHandler");
 const validateJson = require("./middleware/validateJson");
 
 const app = express();
-
+app.set("trust proxy", 1);
 app.use(helmet());
 
 const frontendOrigin =
