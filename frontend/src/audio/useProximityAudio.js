@@ -39,6 +39,9 @@ export function useProximityAudio({
   const toneOscillatorRef = useRef(null);
   const toneSimulationPeerIdRef = useRef(null);
   const toneSimulationRequestRef = useRef(0);
+  const audioStartPromiseRef = useRef(null);
+  const audioLifecycleRef = useRef(0);
+  const audioActiveRef = useRef(false);
 
   const stopToneSimulation = useCallback(() => {
     toneSimulationRequestRef.current += 1;
@@ -67,6 +70,8 @@ export function useProximityAudio({
     spatialGraphRef.current = new SpatialAudioGraph();
 
     return () => {
+      audioLifecycleRef.current += 1;
+      audioActiveRef.current = false;
       stopToneSimulation();
       mediaManagerRef.current?.stopStream();
       spatialGraphRef.current?.destroy();
@@ -140,42 +145,65 @@ export function useProximityAudio({
   /**
    * Starts microphone capture and unlocks AudioContext (user gesture required)
    */
-  const startAudio = useCallback(async () => {
+  const startAudio = useCallback(() => {
+    if (audioStartPromiseRef.current) return audioStartPromiseRef.current;
+    if (audioActiveRef.current) return Promise.resolve();
+
+    const requestId = ++audioLifecycleRef.current;
     setAudioError(null);
     setAudioState('requesting');
 
-    try {
-      // 1. Resume AudioContext on user gesture
-      const ctxState = await spatialGraphRef.current.resumeContext();
-      setAudioContextReady(ctxState === 'running');
+    const startPromise = Promise.resolve().then(async () => {
+      try {
+        // 1. Resume AudioContext on user gesture
+        const ctxState = await spatialGraphRef.current.resumeContext();
+        if (requestId !== audioLifecycleRef.current) return;
+        setAudioContextReady(ctxState === 'running');
 
-      // 2. Acquire microphone
-      const stream = await mediaManagerRef.current.acquireAudioStream();
+        // 2. Acquire microphone
+        const stream = await mediaManagerRef.current.acquireAudioStream();
+        if (requestId !== audioLifecycleRef.current) {
+          mediaManagerRef.current?.stopStream();
+          return;
+        }
 
-      // 3. Initialize signaling if not ready
-      if (!signalingRef.current || !peerManagerRef.current) {
-        await initNetworking(stream);
-      } else {
-        peerManagerRef.current.setLocalStream(stream);
+        // 3. Initialize signaling if not ready
+        if (!signalingRef.current || !peerManagerRef.current) {
+          await initNetworking(stream);
+        } else {
+          peerManagerRef.current.setLocalStream(stream);
+        }
+        if (requestId !== audioLifecycleRef.current) return;
+
+        audioActiveRef.current = true;
+        setIsAudioActive(true);
+        setIsMuted(false);
+        setAudioState('connected');
+      } catch (err) {
+        if (requestId !== audioLifecycleRef.current) return;
+        mediaManagerRef.current?.stopStream();
+        setAudioError(err.message || 'Failed to initialize audio.');
+        setAudioState('error');
+        setIsAudioActive(false);
+      } finally {
+        if (audioStartPromiseRef.current === startPromise) {
+          audioStartPromiseRef.current = null;
+        }
       }
+    });
 
-      setIsAudioActive(true);
-      setIsMuted(false);
-      setAudioState('connected');
-    } catch (err) {
-      mediaManagerRef.current?.stopStream();
-      setAudioError(err.message || 'Failed to initialize audio.');
-      setAudioState('error');
-      setIsAudioActive(false);
-    }
+    audioStartPromiseRef.current = startPromise;
+    return startPromise;
   }, [initNetworking]);
 
   /**
    * Stops audio and tears down peer connections
    */
   const stopAudio = useCallback(() => {
+    audioLifecycleRef.current += 1;
+    audioActiveRef.current = false;
     stopToneSimulation();
-    mediaManagerRef.current.stopStream();
+    mediaManagerRef.current?.stopStream();
     peerManagerRef.current?.destroy();
     spatialGraphRef.current?.destroy();
     signalingRef.current?.disconnect();

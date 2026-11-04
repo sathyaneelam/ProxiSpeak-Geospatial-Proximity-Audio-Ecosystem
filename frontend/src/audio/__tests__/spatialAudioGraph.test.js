@@ -222,6 +222,51 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     graph.destroy();
   });
 
+  test('adding the same stream repeatedly reuses its graph and updates spatial state', () => {
+    const graph = new SpatialAudioGraph();
+    const stream = createMockStream();
+
+    graph.addPeerStream('peer-repeat', stream, { x: 20, y: 0 }, { x: 0, y: 0 }, 100);
+    const peerData = graph.peerNodes.get('peer-repeat');
+
+    const updated = graph.addPeerStream(
+      'peer-repeat',
+      stream,
+      { x: 60, y: 0 },
+      { x: 0, y: 0 },
+      100
+    );
+
+    assert.equal(graph.peerNodes.size, 1);
+    assert.equal(graph.peerNodes.get('peer-repeat'), peerData);
+    assert.equal(peerData.lastDistance, 60);
+    assert.equal(updated.distance, 60);
+    assert.equal(stream.getAudioTracks()[0].readyState, 'live');
+
+    graph.destroy();
+  });
+
+  test('replacing a peer stream disconnects the old graph without stopping either stream', () => {
+    const graph = new SpatialAudioGraph();
+    const oldStream = createMockStream();
+    const newStream = createMockStream();
+
+    graph.addPeerStream('peer-replace', oldStream);
+    const oldPeerData = graph.peerNodes.get('peer-replace');
+    graph.addPeerStream('peer-replace', newStream);
+
+    const newPeerData = graph.peerNodes.get('peer-replace');
+    assert.equal(graph.peerNodes.size, 1);
+    assert.notEqual(newPeerData, oldPeerData);
+    assert.equal(oldPeerData.source.isDisconnected, true);
+    assert.equal(oldPeerData.gainNode.isDisconnected, true);
+    assert.equal(oldPeerData.pannerNode.isDisconnected, true);
+    assert.equal(oldStream.getAudioTracks()[0].readyState, 'live');
+    assert.equal(newStream.getAudioTracks()[0].readyState, 'live');
+
+    graph.destroy();
+  });
+
   test('addPeerStream ignores stream without audio tracks safely', () => {
     const graph = new SpatialAudioGraph();
     const emptyStream = { getAudioTracks: () => [] };
@@ -412,7 +457,7 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     graph.destroy();
   });
 
-  test('removePeer silences gain, stops stream tracks, and disconnects peer audio nodes cleanly', () => {
+  test('removePeer silences gain and disconnects peer audio nodes without stopping WebRTC tracks', () => {
     const graph = new SpatialAudioGraph();
     const stream = createMockStream();
 
@@ -428,8 +473,26 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     graph.removePeer('peer-david');
     assert.equal(graph.peerNodes.has('peer-david'), false);
     assert.equal(peerData.gainNode.gain.value, 0.0);
-    assert.equal(track.readyState, 'ended');
+    assert.equal(track.readyState, 'live');
     assert.equal(peerData.source.isDisconnected, true);
+    assert.equal(peerData.gainNode.isDisconnected, true);
+    assert.equal(peerData.pannerNode.isDisconnected, true);
+
+    graph.destroy();
+  });
+
+  test('removePeer continues cleaning later nodes if an earlier disconnect fails', () => {
+    const graph = new SpatialAudioGraph();
+    const stream = createMockStream();
+
+    graph.addPeerStream('peer-cleanup', stream);
+    const peerData = graph.peerNodes.get('peer-cleanup');
+    peerData.source.disconnect = () => {
+      throw new Error('source disconnect failed');
+    };
+
+    assert.doesNotThrow(() => graph.removePeer('peer-cleanup'));
+    assert.equal(graph.peerNodes.has('peer-cleanup'), false);
     assert.equal(peerData.gainNode.isDisconnected, true);
     assert.equal(peerData.pannerNode.isDisconnected, true);
 
@@ -513,5 +576,8 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     assert.equal(graph.masterGainNode, null);
     assert.equal(ctx.state, 'closed');
     assert.equal(graph.audioContext, null);
+
+    assert.doesNotThrow(() => graph.destroy());
+    assert.equal(graph.peerNodes.size, 0);
   });
 });

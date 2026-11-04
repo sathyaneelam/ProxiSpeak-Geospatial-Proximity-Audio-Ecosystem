@@ -88,12 +88,18 @@ export class SpatialAudioGraph {
    */
   addPeerStream(peerId, stream, peerPos = { x: 0, y: 0 }, localPos = { x: 0, y: 0 }, radius = DEFAULT_EARSHOT_RADIUS, obstacles = []) {
     if (!stream || !stream.getAudioTracks().length) {
+      this.removePeer(peerId);
       console.warn(`[SpatialAudioGraph] No audio tracks found for peer ${peerId}`);
       return;
     }
 
-    // Clean up existing peer nodes if already present to prevent duplicate pipelines
-    this.removePeer(peerId);
+    const existingPeer = this.peerNodes.get(peerId);
+    if (existingPeer?.stream === stream) {
+      return this.updatePeerSpatial(peerId, peerPos, localPos, radius, obstacles);
+    }
+
+    // A replacement stream gets a new graph, but its tracks remain owned by WebRTC.
+    if (existingPeer) this.removePeer(peerId);
 
     const ctx = this.getAudioContext();
     const master = this.getMasterGainNode();
@@ -102,6 +108,9 @@ export class SpatialAudioGraph {
     // In Chromium, creating a MediaStreamAudioSourceNode from a remote WebRTC stream
     // requires a companion HTMLAudioElement or the WebRTC decoder may stall or produce silence.
     let dummyAudio = null;
+    let source = null;
+    let gainNode = null;
+    let pannerNode = null;
     try {
       dummyAudio = new Audio();
       dummyAudio.srcObject = stream;
@@ -113,56 +122,74 @@ export class SpatialAudioGraph {
       // Ignore if HTMLAudioElement is unavailable (e.g. non-browser testing)
     }
 
-    const source = ctx.createMediaStreamSource(stream);
-    const gainNode = ctx.createGain();
+    try {
+      source = ctx.createMediaStreamSource(stream);
+      gainNode = ctx.createGain();
 
-    // Check for StereoPannerNode support with graceful fallback
-    let pannerNode = null;
-    if (typeof ctx.createStereoPanner === 'function') {
-      pannerNode = ctx.createStereoPanner();
-      pannerNode.pan.value = 0;
+      // Check for StereoPannerNode support with graceful fallback
+      if (typeof ctx.createStereoPanner === 'function') {
+        pannerNode = ctx.createStereoPanner();
+        pannerNode.pan.value = 0;
+      }
+
+      // Connect nodes into master output bus
+      if (pannerNode) {
+        source.connect(gainNode);
+        gainNode.connect(pannerNode);
+        pannerNode.connect(master);
+      } else {
+        source.connect(gainNode);
+        gainNode.connect(master);
+      }
+
+      // Initialize spatial attenuation, obstacle sound blocking, peer volume, and panning
+      const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
+      const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
+      const obstacleFactor = computeObstacleAttenuation(localPos, peerPos, obstacles);
+      const spatialGain = Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
+      const peerVolume = 1.0;
+      const effectiveGain = Math.max(0.0, Math.min(1.0, spatialGain * peerVolume));
+      const initialPan = computeStereoPan(localPos.x, peerPos.x, radius);
+
+      const now = ctx.currentTime;
+      gainNode.gain.setValueAtTime(effectiveGain, now);
+      if (pannerNode) {
+        pannerNode.pan.setValueAtTime(initialPan, now);
+      }
+
+      this.peerNodes.set(peerId, {
+        stream,
+        source,
+        gainNode,
+        pannerNode,
+        dummyAudio,
+        spatialGain,
+        lastGain: effectiveGain,
+        lastPan: initialPan,
+        lastDistance: distance,
+        lastObstacleAttenuation: obstacleFactor,
+        volume: peerVolume,
+      });
+
+      return { gain: effectiveGain, spatialGain, pan: initialPan, distance, obstacleAttenuation: obstacleFactor, volume: peerVolume };
+    } catch (error) {
+      for (const node of [source, gainNode, pannerNode]) {
+        try {
+          node?.disconnect();
+        } catch (cleanupError) {
+          console.warn(`[SpatialAudioGraph] Node cleanup warning for peer ${peerId}:`, cleanupError);
+        }
+      }
+      if (dummyAudio) {
+        try {
+          dummyAudio.pause();
+          dummyAudio.srcObject = null;
+        } catch (cleanupError) {
+          console.warn(`[SpatialAudioGraph] Audio element cleanup warning for peer ${peerId}:`, cleanupError);
+        }
+      }
+      throw error;
     }
-
-    // Connect nodes into master output bus
-    if (pannerNode) {
-      source.connect(gainNode);
-      gainNode.connect(pannerNode);
-      pannerNode.connect(master);
-    } else {
-      source.connect(gainNode);
-      gainNode.connect(master);
-    }
-
-    // Initialize spatial attenuation, obstacle sound blocking, peer volume, and panning
-    const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
-    const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
-    const obstacleFactor = computeObstacleAttenuation(localPos, peerPos, obstacles);
-    const spatialGain = Math.max(0.0, Math.min(1.0, distanceGain * obstacleFactor));
-    const peerVolume = 1.0;
-    const effectiveGain = Math.max(0.0, Math.min(1.0, spatialGain * peerVolume));
-    const initialPan = computeStereoPan(localPos.x, peerPos.x, radius);
-
-    const now = ctx.currentTime;
-    gainNode.gain.setValueAtTime(effectiveGain, now);
-    if (pannerNode) {
-      pannerNode.pan.setValueAtTime(initialPan, now);
-    }
-
-    this.peerNodes.set(peerId, {
-      stream,
-      source,
-      gainNode,
-      pannerNode,
-      dummyAudio,
-      spatialGain,
-      lastGain: effectiveGain,
-      lastPan: initialPan,
-      lastDistance: distance,
-      lastObstacleAttenuation: obstacleFactor,
-      volume: peerVolume,
-    });
-
-    return { gain: effectiveGain, spatialGain, pan: initialPan, distance, obstacleAttenuation: obstacleFactor, volume: peerVolume };
   }
 
   /**
@@ -337,56 +364,59 @@ export class SpatialAudioGraph {
   removePeer(peerId) {
     const peerData = this.peerNodes.get(peerId);
     if (!peerData) return;
+    this.peerNodes.delete(peerId);
 
-    try {
-      // Immediately silence gain node to prevent clicks or stale audio buffers
-      if (peerData.gainNode && peerData.gainNode.gain) {
-        try {
-          if (this.audioContext && typeof this.audioContext.currentTime === 'number') {
-            peerData.gainNode.gain.cancelScheduledValues?.(this.audioContext.currentTime);
-            peerData.gainNode.gain.setValueAtTime?.(0.0, this.audioContext.currentTime);
-          } else {
-            peerData.gainNode.gain.value = 0.0;
-          }
-        } catch {
+    // The WebRTC peer manager owns stream tracks; this graph only releases its nodes.
+    if (peerData.gainNode?.gain) {
+      try {
+        if (this.audioContext && typeof this.audioContext.currentTime === 'number') {
+          peerData.gainNode.gain.cancelScheduledValues?.(this.audioContext.currentTime);
+          peerData.gainNode.gain.setValueAtTime?.(0.0, this.audioContext.currentTime);
+        } else {
           peerData.gainNode.gain.value = 0.0;
         }
-      }
-
-      // Stop all tracks associated with this peer stream to prevent stale audio
-      if (peerData.stream) {
+      } catch (err) {
+        console.warn(`[SpatialAudioGraph] Gain cleanup warning for peer ${peerId}:`, err);
         try {
-          peerData.stream.getTracks().forEach((track) => track.stop());
-        } catch {
-          // Ignore
+          peerData.gainNode.gain.value = 0.0;
+        } catch (fallbackError) {
+          console.warn(`[SpatialAudioGraph] Gain fallback warning for peer ${peerId}:`, fallbackError);
         }
       }
-      if (peerData.source && peerData.source.mediaStream) {
-        try {
-          peerData.source.mediaStream.getTracks().forEach((track) => track.stop());
-        } catch {
-          // Ignore
-        }
-      }
-
-      // Disconnect audio nodes
-      peerData.source?.disconnect();
-      peerData.gainNode?.disconnect();
-      peerData.pannerNode?.disconnect();
-
-      // Pause and clear dummy companion audio element to release WebRTC decoders
-      if (peerData.dummyAudio) {
-        peerData.dummyAudio.pause();
-        peerData.dummyAudio.srcObject = null;
-        if (typeof peerData.dummyAudio.load === 'function') {
-          peerData.dummyAudio.load();
-        }
-      }
-    } catch (err) {
-      console.warn(`[SpatialAudioGraph] Cleanup warning for peer ${peerId}:`, err);
     }
 
-    this.peerNodes.delete(peerId);
+    for (const [label, node] of [
+      ['source', peerData.source],
+      ['gain', peerData.gainNode],
+      ['panner', peerData.pannerNode],
+    ]) {
+      try {
+        node?.disconnect();
+      } catch (err) {
+        console.warn(`[SpatialAudioGraph] ${label} disconnect warning for peer ${peerId}:`, err);
+      }
+    }
+
+    // Pause and clear dummy companion audio element to release WebRTC decoders.
+    if (peerData.dummyAudio) {
+      try {
+        peerData.dummyAudio.pause();
+      } catch (err) {
+        console.warn(`[SpatialAudioGraph] Audio element pause warning for peer ${peerId}:`, err);
+      }
+      try {
+        peerData.dummyAudio.srcObject = null;
+      } catch (err) {
+        console.warn(`[SpatialAudioGraph] Audio element release warning for peer ${peerId}:`, err);
+      }
+      if (typeof peerData.dummyAudio.load === 'function') {
+        try {
+          peerData.dummyAudio.load();
+        } catch (err) {
+          console.warn(`[SpatialAudioGraph] Audio element load warning for peer ${peerId}:`, err);
+        }
+      }
+    }
   }
 
   /**
@@ -408,14 +438,17 @@ export class SpatialAudioGraph {
     }
 
     if (this.audioContext) {
+      const context = this.audioContext;
+      this.audioContext = null;
       try {
-        if (this.audioContext.state !== 'closed') {
-          this.audioContext.close();
+        if (context.state !== 'closed') {
+          context.close()?.catch((err) => {
+            console.warn('[SpatialAudioGraph] Context close warning:', err);
+          });
         }
       } catch (err) {
         console.warn('[SpatialAudioGraph] Context close warning:', err);
       }
-      this.audioContext = null;
     }
   }
 }
