@@ -722,11 +722,14 @@ The database layer and spatial proximity subsystem have been thoroughly verified
 
 ### 7.2 Testing & Benchmarking Instructions
 ```bash
-# Run full automated test suite (182 tests across 31 suites)
+# Run full automated test suite (194 tests across 32 suites)
 npm test
 
-# Run focused database service tests
+# Run focused database service tests (113 tests across 17 suites)
 node --test tests/services/positionService.test.js
+
+# Run LivePosition schema and index validation tests (19 tests)
+node --test tests/schemas/livePosition.test.js
 
 # Run spatial proximity benchmarks across all avatar densities and partition scenarios
 npm run benchmark
@@ -734,7 +737,13 @@ npm run benchmark
 node scripts/benchmark.js
 ```
 
-### 7.3 Known Limitations
+### 7.3 Day 16 Regression & Hardening Verification
+- **Consecutive Movement Trajectory:** Verified 10 consecutive diagonal position updates maintain strict 1:1 document in-place persistence with zero record growth.
+- **Duplicate Prevention Under Concurrency:** Validated $E11000$ duplicate key collision catch-and-retry recovery in `upsertPosition`.
+- **Planar Boundary Precision:** Validated boundary conditions at exact radius ($100.0\text{px}$ with 0 volume), inside ($95\text{px}$ with audible volume), outside ($105\text{px}$ excluded), and dynamic whisper ($30\text{px}$) and conference ($250\text{px}$) radii.
+- **Scoped Stale Reaping:** Validated office-filtered session garbage collection via `removeStalePositions(maxAgeMs, officeId)`.
+
+### 7.4 Known Limitations
 1. **Remote Atlas IP Whitelist:** Automated local development and CI test environments without a public static IP or VPN cannot reach the remote MongoDB Atlas cluster directly. The repository includes fully verified offline simulated query planners and high-precision in-memory benchmarks that execute deterministically without external network access.
 2. **Application-Side vs. Database Wire Latency:** Benchmarks reported by `scripts/benchmark.js` measure CPU-bound geometric distance calculation, smoothstep attenuation, and stereo panning over coordinate arrays. In production with a remote MongoDB server, total latency includes network wire round-trip time (RTT). The compound planar index (`officeId_1_location_2d`) guarantees that remote execution utilizes `IXSCAN` and avoids collection scans (`COLLSCAN`).
 3. **Canvas Boundaries:** Coordinates are validated against office boundaries ($1000 \times 600$) when `validateBounds: true` or `{ dimensions }` are passed to `updatePosition`. For unconstrained rooms, non-negativity is strictly required by the schema.

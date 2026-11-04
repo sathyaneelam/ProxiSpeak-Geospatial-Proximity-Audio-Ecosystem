@@ -383,5 +383,47 @@ describe('LivePosition Schema & Index Validation', () => {
     await position.validate();
     assert.deepStrictEqual(position.location, [250, 350]);
   });
+
+  it('should calculate planar Euclidean distance using calculateDistanceTo instance method', async () => {
+    const pos = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: [100, 100]
+    });
+
+    // 3-4-5 right triangle: dx=30, dy=40 -> distance=50
+    const dist50 = pos.calculateDistanceTo([130, 140]);
+    assert.strictEqual(dist50, 50);
+
+    // Same point -> 0
+    const distZero = pos.calculateDistanceTo([100, 100]);
+    assert.strictEqual(distZero, 0);
+
+    // Rejects invalid target locations
+    assert.throws(() => pos.calculateDistanceTo(null), /Target location must be a 2-element array/);
+    assert.throws(() => pos.calculateDistanceTo([100]), /Target location must be a 2-element array/);
+    assert.throws(() => pos.calculateDistanceTo([NaN, 100]), /Target location must be a 2-element array/);
+    assert.throws(() => pos.calculateDistanceTo([100, Infinity]), /Target location must be a 2-element array/);
+  });
+
+  it('should determine proximity using isWithinProximity instance method with custom and default radii', async () => {
+    const pos = new LivePosition({
+      userId: dummyUserId,
+      officeId: dummyOfficeId,
+      location: [500, 300]
+    });
+
+    // Point at distance 60px (dx=60, dy=0) -> within default 100px radius
+    assert.strictEqual(pos.isWithinProximity([560, 300]), true);
+
+    // Point at distance 100px -> exactly on boundary -> true
+    assert.strictEqual(pos.isWithinProximity([600, 300], 100), true);
+
+    // Point at distance 101px -> false
+    assert.strictEqual(pos.isWithinProximity([601, 300], 100), false);
+
+    // Point at distance 60px with custom 50px whisper radius -> false
+    assert.strictEqual(pos.isWithinProximity([560, 300], 50), false);
+  });
 });
 

@@ -61,7 +61,49 @@ const livePositionSchema = new mongoose.Schema(
     { timestamps: true }
 );
 
+// Automatically synchronize lastUpdated timestamp on document mutation
+livePositionSchema.pre('save', function (next) {
+    if (this.isModified('location') || this.isModified('officeId')) {
+        this.lastUpdated = new Date();
+    }
+    if (typeof next === 'function') next();
+});
+
+/**
+ * Calculate planar Euclidean distance from this position to a target [x, y] coordinate pair.
+ *
+ * @param {[number, number]} targetLocation - [x, y] target coordinates
+ * @returns {number} Distance in planar canvas pixels
+ */
+livePositionSchema.methods.calculateDistanceTo = function (targetLocation) {
+    if (
+        !Array.isArray(targetLocation) ||
+        targetLocation.length !== 2 ||
+        typeof targetLocation[0] !== 'number' ||
+        !isFinite(targetLocation[0]) ||
+        typeof targetLocation[1] !== 'number' ||
+        !isFinite(targetLocation[1])
+    ) {
+        throw new Error('Target location must be a 2-element array of finite numbers [x, y]');
+    }
+    const dx = targetLocation[0] - this.location[0];
+    const dy = targetLocation[1] - this.location[1];
+    return Math.sqrt(dx * dx + dy * dy);
+};
+
+/**
+ * Check if another [x, y] location is within a given proximity radius (default 100px).
+ *
+ * @param {[number, number]} targetLocation - [x, y] target coordinates
+ * @param {number} [radius=100] - Proximity threshold in pixels
+ * @returns {boolean} True if within radius
+ */
+livePositionSchema.methods.isWithinProximity = function (targetLocation, radius = 100) {
+    const dist = this.calculateDistanceTo(targetLocation);
+    return dist <= (typeof radius === 'number' && radius > 0 ? radius : 100);
+};
+
 // Compound planar index for high-throughput spatial proximity lookups partitioned by office
 livePositionSchema.index({ officeId: 1, location: '2d' });
 
-module.exports = mongoose.model('LivePosition', livePositionSchema);
+module.exports = mongoose.model('LivePosition', livePositionSchema);
