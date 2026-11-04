@@ -31,6 +31,7 @@ app.use(express.json());
 // Create the MongoDB session store separately so it can be closed.
 const sessionStore = MongoStore.create({
   mongoUrl: process.env.MONGODB_URI,
+  dbName: "ProxiSpeak",
   collectionName: "sessions",
   ttl: 24 * 60 * 60,
 });
