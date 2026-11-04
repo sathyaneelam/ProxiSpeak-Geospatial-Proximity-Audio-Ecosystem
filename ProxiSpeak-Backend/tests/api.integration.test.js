@@ -117,6 +117,42 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(data.status, "error");
   });
 
+  it("POST /api/auth/signup should reject an empty display name", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        displayName: "   ",
+        email: `emptyname${Date.now()}@example.com`,
+        password: "testpass123",
+      }),
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  it("POST /api/auth/signup should reject a missing email", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        displayName: "Test User",
+        password: "testpass123",
+      }),
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  it("POST /api/auth/signup should reject a missing password", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        displayName: "Test User",
+        email: `nopassword${Date.now()}@example.com`,
+      }),
+    });
+    assert.strictEqual(res.status, 400);
+  });
   it("POST /api/auth/signup should reject an already registered email", async () => {
     const email = `duplicate${Date.now()}@example.com`;
 
