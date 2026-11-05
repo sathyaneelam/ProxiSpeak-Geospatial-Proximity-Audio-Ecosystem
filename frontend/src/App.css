@@ -253,6 +253,29 @@
   white-space: nowrap;
 }
 
+.person-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.person-proximity-track {
+  display: block;
+  width: 54px;
+  height: 5px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #26374d;
+}
+
+.person-proximity-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width 180ms ease, background 180ms ease;
+}
+
 .nearby,
 .faraway {
   font-size: 11px;

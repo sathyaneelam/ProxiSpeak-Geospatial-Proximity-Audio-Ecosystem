@@ -1024,11 +1024,23 @@ function App() {
     ? onlineMembers.find((peer) => peer.id === hoveredPeer)
     : null
 
-  const nearbyPeople = useMemo(() => onlineMembers.map((peer) => ({
-    ...peer,
-    distance: Math.hypot(position.x - peer.x, position.y - peer.y),
-    serverInEarshot: nearbyPeerIds.has(peer.id),
-  })), [onlineMembers, position.x, position.y, nearbyPeerIds])
+  const nearbyPeople = useMemo(() => onlineMembers
+    .map((peer) => {
+      const distance = Math.hypot(position.x - peer.x, position.y - peer.y)
+      const proximityPercent = Math.max(
+        0,
+        Math.min(100, Math.round((1 - distance / Math.max(RADIUS, 1)) * 100))
+      )
+
+      return {
+        ...peer,
+        distance,
+        proximityPercent,
+        serverInEarshot: nearbyPeerIds.has(peer.id),
+      }
+    })
+    .sort((a, b) => a.distance - b.distance),
+  [onlineMembers, position.x, position.y, nearbyPeerIds])
 
   // The server is authoritative for earshot. Local distances are displayed for context.
   const liveNearbyPeers = useMemo(() => nearbyPeople
@@ -1438,7 +1450,20 @@ function App() {
             {nearbyPeople.map((person) => (
               <div className="person-row" key={person.id}>
                 <span className="person-dot" style={{ background: person.color }} />
-                <span>{person.name}</span>
+                <span className="person-name">{person.name}</span>
+                <span
+                  className="person-proximity-track"
+                  title={`Proximity: ${person.proximityPercent}%`}
+                  aria-label={`Proximity ${person.proximityPercent}%`}
+                >
+                  <span
+                    className="person-proximity-fill"
+                    style={{
+                      width: `${person.proximityPercent}%`,
+                      background: person.serverInEarshot ? '#34d399' : person.color,
+                    }}
+                  />
+                </span>
                 <span className="person-distance">{Math.round(person.distance)} px</span>
                 <span className={person.serverInEarshot ? 'nearby' : 'faraway'}>
                   {person.serverInEarshot ? 'Nearby (server)' : 'Out of range'}
