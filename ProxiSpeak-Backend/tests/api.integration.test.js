@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const { describe, it, before, after } = require("node:test");
@@ -153,6 +152,7 @@ describe("REST API Integration Tests", () => {
     });
     assert.strictEqual(res.status, 400);
   });
+
   it("POST /api/auth/signup should reject an already registered email", async () => {
     const email = `duplicate${Date.now()}@example.com`;
 
@@ -244,6 +244,27 @@ describe("REST API Integration Tests", () => {
     } finally {
       await User.deleteOne({ email });
     }
+  });
+
+  // NEW LOGIN TEST
+
+  it("POST /api/auth/login should reject an unregistered email", async () => {
+    const email = `unknown${Date.now()}@example.com`;
+
+    const res = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email,
+        password: "testpass123",
+      }),
+    });
+
+    assert.strictEqual(res.status, 401);
+
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "Invalid email or password");
   });
 
   // SESSION TESTS
@@ -392,7 +413,7 @@ describe("REST API Integration Tests", () => {
     assert.strictEqual(data.message, "Route not found");
   });
 
-    it("POST /api/positions with invalid coordinates should return 400", async () => {
+  it("POST /api/positions with invalid coordinates should return 400", async () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -409,7 +430,8 @@ describe("REST API Integration Tests", () => {
   });
 
   // OFFICE DATABASE PERSISTENCE TESTS
-    it("POST /api/positions with a non-existing user should return 404", async () => {
+
+  it("POST /api/positions with a non-existing user should return 404", async () => {
     const res = await fetch(`${baseUrl}/api/positions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -471,6 +493,7 @@ describe("REST API Integration Tests", () => {
       await User.deleteOne({ _id: user._id });
     }
   });
+
   it("POST /api/offices should save an office and GET should retrieve it", async () => {
     const officeName = `Persistence Test Office ${Date.now()}`;
     let officeId;
