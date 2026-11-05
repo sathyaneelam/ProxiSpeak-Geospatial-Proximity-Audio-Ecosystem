@@ -57,6 +57,7 @@ class MockAudioContext {
     this.state = 'suspended';
     this.currentTime = 0;
     this.destination = new MockAudioNode();
+    this.mediaStreamSourceCount = 0;
   }
 
   createGain() {
@@ -68,6 +69,7 @@ class MockAudioContext {
   }
 
   createMediaStreamSource() {
+    this.mediaStreamSourceCount += 1;
     return new MockAudioNode();
   }
 
@@ -550,6 +552,71 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     const metricsB = graph.getPeerSpatialMetrics('peer-B');
     assert.ok(metricsB);
     assert.equal(metricsB.distance, 50);
+
+    graph.destroy();
+  });
+
+  test('handles multiple participants independently through join, spatial updates, mute, and leave', () => {
+    const graph = new SpatialAudioGraph();
+    const leftStream = createMockStream();
+    const rightStream = createMockStream();
+    const distantStream = createMockStream();
+
+    graph.addPeerStream('participant-left', leftStream, { x: -50, y: 0 }, { x: 0, y: 0 }, 100);
+    graph.addPeerStream('participant-right', rightStream, { x: 50, y: 0 }, { x: 0, y: 0 }, 100);
+    graph.addPeerStream('participant-distant', distantStream, { x: 0, y: 100 }, { x: 0, y: 0 }, 100);
+
+    const leftPeer = graph.peerNodes.get('participant-left');
+    const rightPeer = graph.peerNodes.get('participant-right');
+    const distantPeer = graph.peerNodes.get('participant-distant');
+    const context = graph.audioContext;
+
+    assert.equal(graph.peerNodes.size, 3);
+    assert.equal(context.mediaStreamSourceCount, 3);
+    assert.equal(leftPeer.lastGain, 0.5);
+    assert.equal(leftPeer.lastPan, -0.5);
+    assert.equal(rightPeer.lastGain, 0.5);
+    assert.equal(rightPeer.lastPan, 0.5);
+    assert.equal(distantPeer.lastGain, 0);
+
+    graph.addPeerStream('participant-left', leftStream, { x: -25, y: 0 }, { x: 0, y: 0 }, 100);
+    assert.equal(graph.peerNodes.get('participant-left'), leftPeer);
+    assert.equal(context.mediaStreamSourceCount, 3);
+    assert.equal(leftPeer.lastGain, 0.8438);
+    assert.equal(leftPeer.lastPan, -0.25);
+    assert.equal(rightPeer.lastGain, 0.5);
+    assert.equal(rightPeer.lastPan, 0.5);
+
+    graph.setPeerVolume('participant-left', 0);
+    assert.equal(leftPeer.lastGain, 0);
+    assert.equal(rightPeer.lastGain, 0.5);
+    graph.setPeerVolume('participant-left', 1);
+    assert.equal(leftPeer.lastGain, 0.8438);
+
+    graph.setMuted(true);
+    assert.equal(graph.masterGainNode.gain.target, 0);
+    assert.equal(leftPeer.gainNode.isDisconnected, false);
+    assert.equal(rightPeer.gainNode.isDisconnected, false);
+    graph.setMuted(false);
+    assert.equal(graph.masterGainNode.gain.target, 1);
+    assert.equal(leftPeer.lastGain, 0.8438);
+    assert.equal(rightPeer.lastGain, 0.5);
+
+    graph.removePeer('participant-right');
+    assert.equal(graph.peerNodes.has('participant-right'), false);
+    assert.equal(rightPeer.source.isDisconnected, true);
+    assert.equal(rightPeer.gainNode.isDisconnected, true);
+    assert.equal(rightPeer.pannerNode.isDisconnected, true);
+    assert.equal(rightStream.getAudioTracks()[0].readyState, 'live');
+    assert.equal(graph.peerNodes.has('participant-left'), true);
+    assert.equal(leftPeer.source.isDisconnected, false);
+
+    const joiningStream = createMockStream();
+    graph.addPeerStream('participant-joining', joiningStream, { x: 20, y: 0 }, { x: 0, y: 0 }, 100);
+    assert.equal(graph.peerNodes.size, 3);
+    assert.equal(context.mediaStreamSourceCount, 4);
+    assert.equal(graph.getPeerSpatialMetrics('participant-joining').pan, 0.2);
+    assert.equal(graph.getPeerSpatialMetrics('participant-left').pan, -0.25);
 
     graph.destroy();
   });
