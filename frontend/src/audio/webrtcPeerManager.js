@@ -117,6 +117,7 @@ export class WebRTCPeerManager {
    * @param {Function} [options.onRemoteStream] - (peerId, MediaStream) => void
    * @param {Function} [options.onPeerConnectionState] - (peerId, state) => void
    * @param {Function} [options.onPeerRemoved] - (peerId) => void
+   * @param {Function} [options.onPeerPosition] - (peerId, position) => void
    * @param {number[]} [options.reconnectDelays] - Delays between connection retries in milliseconds
    * @param {number} [options.disconnectGracePeriod] - Time to wait before retrying a disconnected peer
    */
@@ -133,6 +134,7 @@ export class WebRTCPeerManager {
     this.onRemoteStream = options.onRemoteStream || (() => {});
     this.onPeerConnectionState = options.onPeerConnectionState || (() => {});
     this.onPeerRemoved = options.onPeerRemoved || (() => {});
+    this.onPeerPosition = options.onPeerPosition || (() => {});
     this.reconnectDelays = options.reconnectDelays || [1000, 2000, 4000];
     this.disconnectGracePeriod = options.disconnectGracePeriod ?? 3000;
     this.localPosition = options.localPosition || null;
@@ -297,6 +299,7 @@ export class WebRTCPeerManager {
 
     peerId = peerId.trim();
     this.peerPositions.set(peerId, position);
+    this._notifyPeerCallback('onPeerPosition', this.onPeerPosition, peerId, position);
     this._updatePeerProximity(peerId, position);
   }
 

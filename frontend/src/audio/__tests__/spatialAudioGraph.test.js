@@ -621,6 +621,35 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     graph.destroy();
   });
 
+  test('mixes independent participant sources through one output while preserving per-peer controls', () => {
+    const graph = new SpatialAudioGraph();
+    const leftStream = createMockStream();
+    const rightStream = createMockStream();
+
+    graph.addPeerStream('left-participant', leftStream, { x: -40, y: 0 }, { x: 0, y: 0 }, 100);
+    graph.addPeerStream('right-participant', rightStream, { x: 40, y: 0 }, { x: 0, y: 0 }, 100);
+
+    const left = graph.peerNodes.get('left-participant');
+    const right = graph.peerNodes.get('right-participant');
+
+    assert.notEqual(left.source, right.source);
+    assert.notEqual(left.gainNode, right.gainNode);
+    assert.notEqual(left.pannerNode, right.pannerNode);
+    assert.equal(left.pannerNode.connections[0], graph.masterGainNode);
+    assert.equal(right.pannerNode.connections[0], graph.masterGainNode);
+    assert.equal(graph.masterGainNode.connections[0], graph.audioContext.destination);
+    assert.equal(graph.audioContext.mediaStreamSourceCount, 2);
+    assert.equal(left.lastPan, -0.4);
+    assert.equal(right.lastPan, 0.4);
+
+    graph.setPeerVolume('left-participant', 0);
+    assert.equal(left.lastGain, 0);
+    assert.ok(right.lastGain > 0);
+    assert.equal(right.source.isDisconnected, false);
+
+    graph.destroy();
+  });
+
   test('destroy releases all peers, disconnects master gain node, and closes AudioContext', () => {
     const graph = new SpatialAudioGraph();
     const stream1 = createMockStream();

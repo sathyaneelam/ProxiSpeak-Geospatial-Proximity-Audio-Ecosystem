@@ -382,12 +382,14 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
 
   test('discovers peers from signaling and negotiates only within earshot', async () => {
     const transport = new MockSignalingTransport('local');
+    const peerPositions = [];
     const manager = new WebRTCPeerManager({
       localUserId: 'local',
       officeId: 'office-1',
       localPosition: { x: 0, y: 0 },
       earshotRadius: 100,
       signalingTransport: transport,
+      onPeerPosition: (peerId, position) => peerPositions.push({ peerId, position }),
     });
 
     try {
@@ -405,6 +407,10 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
 
       assert.ok(manager.peers.has('near-peer'));
       assert.equal(manager.peers.has('far-peer'), false);
+      assert.deepEqual(peerPositions[0], {
+        peerId: 'near-peer',
+        position: { x: 40, y: 0 },
+      });
 
       transport.emit('proximity:position-update', {
         userId: 'far-peer',
@@ -413,6 +419,10 @@ describe('WebRTCPeerManager - Deduplication, Glare Arbitration, and Teardown', (
       });
       await waitFor(() => transport.sentOffers.length === 2);
       assert.ok(manager.peers.has('far-peer'));
+      assert.deepEqual(peerPositions.at(-1), {
+        peerId: 'far-peer',
+        position: { x: 50, y: 0 },
+      });
 
       transport.emit('voice:user-left', { userId: 'near-peer' });
       assert.equal(manager.peers.has('near-peer'), false);

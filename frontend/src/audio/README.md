@@ -174,17 +174,22 @@ $$\text{pan} = \text{clamp}\left(\frac{\Delta x}{r}, -1.0, 1.0\right)$$
 
 Audio parameters are scheduled using `setTargetAtTime(target, currentTime, 0.05)` to guarantee zero pops or clicks during movement.
 
+### Participant Mixing and Controls
+
+Each remote WebRTC participant is connected to its own `MediaStreamAudioSourceNode`, distance/obstacle `GainNode`, and stereo panner. These independent paths feed the shared master output bus, so spatial updates or per-peer volume changes do not affect other participants. Signaled position changes update active graph paths immediately; peer removal disconnects that participant's nodes, while reconnecting streams reuse the same peer identity without creating duplicate paths. The microphone mute control disables the local sending track, while deafen mutes only the incoming master output.
+
 ---
 
 ## 5. Security & Resource Lifecycle
 
 - **No Secrets on Client:** No API keys or credentials embedded in frontend code.
 - **Microphone On-Demand:** Microphone tracks are requested only when the user explicitly clicks "Connect Spatial Voice".
-- **Hardware Cleanup:** On unmount, mute, or disconnect:
+- **Hardware Cleanup:** On unmount or disconnect:
   - All `MediaStreamTrack` objects are explicitly stopped (`track.stop()`), turning off hardware indicator lights.
   - All `RTCPeerConnection` instances are closed and listeners removed.
   - Web Audio nodes (`MediaStreamSourceNode`, `GainNode`, `StereoPannerNode`) are disconnected.
   - `AudioContext` is closed.
+- **Mute Controls:** Microphone mute disables the local track without releasing the microphone; deafen silences incoming audio through the master gain node.
 - **HTTPS / Localhost Requirement:** Browsers require a secure context (`window.isSecureContext` — HTTPS or `http://localhost`) to access `navigator.mediaDevices.getUserMedia`.
 
 ### WebRTC Connection Diagnostics

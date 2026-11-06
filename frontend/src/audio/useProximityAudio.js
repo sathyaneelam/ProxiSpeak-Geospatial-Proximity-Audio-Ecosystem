@@ -20,12 +20,14 @@ export function useProximityAudio({
   officeId = 'office_main',
   localPosition = { x: 500, y: 300 },
   peers = [],
+  obstacles = [],
   earshotRadius = DEFAULT_EARSHOT_RADIUS,
   signalingUrl = 'http://localhost:3000',
   preferredTransport = 'broadcast', // 'broadcast' for local zero-config 2-tab demo, or 'socketio'
 }) {
   const [isAudioActive, setIsAudioActive] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isDeafened, setIsDeafened] = useState(false);
   const [audioState, setAudioState] = useState('idle'); // 'idle' | 'requesting' | 'connected' | 'error'
   const [audioError, setAudioError] = useState(null);
   const [audioContextReady, setAudioContextReady] = useState(false);
@@ -42,6 +44,9 @@ export function useProximityAudio({
   const audioStartPromiseRef = useRef(null);
   const audioLifecycleRef = useRef(0);
   const audioActiveRef = useRef(false);
+  const localPositionRef = useRef(localPosition);
+  const earshotRadiusRef = useRef(earshotRadius);
+  const obstaclesRef = useRef(obstacles);
 
   const stopToneSimulation = useCallback(() => {
     toneSimulationRequestRef.current += 1;
@@ -103,7 +108,23 @@ export function useProximityAudio({
           const peerPos =
             peerManagerRef.current?.getPeerPosition(peerId) ||
             (peer ? { x: peer.x, y: peer.y } : { x: 0, y: 0 });
-          spatialGraphRef.current.addPeerStream(peerId, stream, peerPos, localPosition, earshotRadius);
+          spatialGraphRef.current?.addPeerStream(
+            peerId,
+            stream,
+            peerPos,
+            localPositionRef.current,
+            earshotRadiusRef.current,
+            obstaclesRef.current
+          );
+        },
+        onPeerPosition: (peerId, position) => {
+          spatialGraphRef.current?.updatePeerSpatial(
+            peerId,
+            position,
+            localPositionRef.current,
+            earshotRadiusRef.current,
+            obstaclesRef.current
+          );
         },
         onPeerConnectionState: (peerId, state) => {
           setPeerMetrics((prev) => ({
@@ -178,6 +199,8 @@ export function useProximityAudio({
         audioActiveRef.current = true;
         setIsAudioActive(true);
         setIsMuted(false);
+        spatialGraphRef.current?.setMuted(false);
+        setIsDeafened(false);
         setAudioState('connected');
       } catch (err) {
         if (requestId !== audioLifecycleRef.current) return;
@@ -214,6 +237,7 @@ export function useProximityAudio({
 
     setIsAudioActive(false);
     setIsMuted(false);
+    setIsDeafened(false);
     setAudioContextReady(false);
     setAudioState('idle');
     setPeerMetrics({});
@@ -227,6 +251,15 @@ export function useProximityAudio({
     const nextMuted = mediaManagerRef.current.toggleMute();
     setIsMuted(nextMuted);
   }, []);
+
+  /**
+   * Mutes or unmutes all incoming participant audio without affecting the microphone.
+   */
+  const toggleDeafen = useCallback(() => {
+    const nextDeafened = !isDeafened;
+    spatialGraphRef.current?.setMuted(nextDeafened);
+    setIsDeafened(nextDeafened);
+  }, [isDeafened]);
 
   /**
    * Built-in Spatial Audio Demo Tone:
@@ -303,6 +336,9 @@ export function useProximityAudio({
    * Proximity evaluation and spatial parameter update loop
    */
   useEffect(() => {
+    localPositionRef.current = localPosition;
+    earshotRadiusRef.current = earshotRadius;
+    obstaclesRef.current = obstacles;
     if (!localPosition) return;
 
     peerManagerRef.current?.setLocalPosition(localPosition, earshotRadius);
@@ -324,14 +360,6 @@ export function useProximityAudio({
         y: peer.y,
       });
 
-      // Update spatial graph if peer has active stream
-      spatialGraphRef.current?.updatePeerSpatial(
-        peerId,
-        { x: peer.x, y: peer.y },
-        localPosition,
-        earshotRadius
-      );
-
       const simulationPeerId = getToneSimulationPeerId(peer);
       if (
         isToneSimulationActive &&
@@ -342,7 +370,8 @@ export function useProximityAudio({
           simulationPeerId,
           { x: peer.x, y: peer.y },
           localPosition,
-          earshotRadius
+          earshotRadius,
+          obstacles
         );
       }
 
@@ -383,11 +412,12 @@ export function useProximityAudio({
     }
 
     setPeerMetrics(nextMetrics);
-  }, [localPosition, peers, earshotRadius, isAudioActive, isToneSimulationActive, stopToneSimulation]);
+  }, [localPosition, peers, obstacles, earshotRadius, isAudioActive, isToneSimulationActive, stopToneSimulation]);
 
   return {
     isAudioActive,
     isMuted,
+    isDeafened,
     audioState,
     audioError,
     audioContextReady,
@@ -396,6 +426,7 @@ export function useProximityAudio({
     startAudio,
     stopAudio,
     toggleMute,
+    toggleDeafen,
     toggleToneSimulation,
   };
 }
