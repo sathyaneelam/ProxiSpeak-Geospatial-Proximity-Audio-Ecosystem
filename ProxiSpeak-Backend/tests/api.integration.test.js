@@ -126,6 +126,7 @@ describe("REST API Integration Tests", () => {
         password: "testpass123",
       }),
     });
+
     assert.strictEqual(res.status, 400);
   });
 
@@ -138,6 +139,7 @@ describe("REST API Integration Tests", () => {
         password: "testpass123",
       }),
     });
+
     assert.strictEqual(res.status, 400);
   });
 
@@ -150,6 +152,7 @@ describe("REST API Integration Tests", () => {
         email: `nopassword${Date.now()}@example.com`,
       }),
     });
+
     assert.strictEqual(res.status, 400);
   });
 
@@ -246,8 +249,6 @@ describe("REST API Integration Tests", () => {
     }
   });
 
-  // NEW LOGIN TEST
-
   it("POST /api/auth/login should reject an unregistered email", async () => {
     const email = `unknown${Date.now()}@example.com`;
 
@@ -265,6 +266,40 @@ describe("REST API Integration Tests", () => {
     const data = await res.json();
     assert.strictEqual(data.status, "error");
     assert.strictEqual(data.message, "Invalid email or password");
+  });
+
+  // NEW LOGIN VALIDATION TESTS
+
+  it("POST /api/auth/login should reject a missing email", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        password: "testpass123",
+      }),
+    });
+
+    assert.strictEqual(res.status, 400);
+
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "Email and password are required");
+  });
+
+  it("POST /api/auth/login should reject a missing password", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: `missingpassword${Date.now()}@example.com`,
+      }),
+    });
+
+    assert.strictEqual(res.status, 400);
+
+    const data = await res.json();
+    assert.strictEqual(data.status, "error");
+    assert.strictEqual(data.message, "Email and password are required");
   });
 
   // SESSION TESTS
