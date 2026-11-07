@@ -193,6 +193,23 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     graph.destroy();
   });
 
+  test('setMuted before playback does not create an unused AudioContext', () => {
+    const graph = new SpatialAudioGraph();
+
+    graph.setMuted(true);
+
+    assert.equal(graph.isMasterMuted(), true);
+    assert.equal(graph.audioContext, null);
+    assert.equal(graph.masterGainNode, null);
+
+    graph.addPeerStream('peer-muted-on-join', createMockStream());
+    assert.equal(graph.masterGainNode.gain.value, 0);
+
+    graph.setMuted(false);
+    assert.equal(graph.masterGainNode.gain.target, 1);
+    graph.destroy();
+  });
+
   test('addPeerStream connects through gain, panner, and master gain bus', () => {
     const graph = new SpatialAudioGraph();
     const stream = createMockStream();

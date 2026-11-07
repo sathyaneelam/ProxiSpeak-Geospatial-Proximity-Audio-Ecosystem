@@ -248,6 +248,8 @@ export class SpatialAudioGraph {
    */
   setMuted(muted) {
     this.isMuted = Boolean(muted);
+    if (!this.audioContext || !this.masterGainNode) return;
+
     const ctx = this.getAudioContext();
     const targetGain = this.isMuted ? 0.0 : this.masterVolume;
     const now = ctx.currentTime;
