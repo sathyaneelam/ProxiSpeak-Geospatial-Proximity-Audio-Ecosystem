@@ -13,6 +13,34 @@ import {
   computeObstacleAttenuation,
 } from './spatialAudioMath.js';
 
+const snapshotObstacles = (obstacles) =>
+  Array.isArray(obstacles)
+    ? obstacles.map((obstacle) => ({
+      obstacle,
+      x: obstacle?.x,
+      y: obstacle?.y,
+      w: obstacle?.w,
+      h: obstacle?.h,
+      type: obstacle?.type,
+    }))
+    : null;
+
+const obstaclesMatchSnapshot = (obstacles, snapshot) =>
+  Array.isArray(obstacles) &&
+  snapshot !== null &&
+  obstacles.length === snapshot.length &&
+  obstacles.every((obstacle, index) => {
+    const previous = snapshot[index];
+    return (
+      obstacle === previous.obstacle &&
+      obstacle?.x === previous.x &&
+      obstacle?.y === previous.y &&
+      obstacle?.w === previous.w &&
+      obstacle?.h === previous.h &&
+      obstacle?.type === previous.type
+    );
+  });
+
 export class SpatialAudioGraph {
   constructor(options = {}) {
     this.audioContext = null;
@@ -46,6 +74,7 @@ export class SpatialAudioGraph {
       this.masterGainNode = this.audioContext.createGain();
       const initialMasterGain = this.isMuted ? 0.0 : this.masterVolume;
       this.masterGainNode.gain.setValueAtTime(initialMasterGain, this.audioContext.currentTime);
+      this.lastMasterGain = initialMasterGain;
       this.masterGainNode.connect(this.audioContext.destination);
     }
     return this.audioContext;
@@ -168,6 +197,12 @@ export class SpatialAudioGraph {
         lastPan: initialPan,
         lastDistance: distance,
         lastObstacleAttenuation: obstacleFactor,
+        lastPeerX: peerPos.x,
+        lastPeerY: peerPos.y,
+        lastLocalX: localPos.x,
+        lastLocalY: localPos.y,
+        lastRadius: radius,
+        obstacleSnapshot: snapshotObstacles(obstacles),
         volume: peerVolume,
       });
 
@@ -207,6 +242,24 @@ export class SpatialAudioGraph {
     const peerData = this.peerNodes.get(peerId);
     if (!peerData) return null;
 
+    if (
+      peerData.lastPeerX === peerPos.x &&
+      peerData.lastPeerY === peerPos.y &&
+      peerData.lastLocalX === localPos.x &&
+      peerData.lastLocalY === localPos.y &&
+      peerData.lastRadius === radius &&
+      obstaclesMatchSnapshot(obstacles, peerData.obstacleSnapshot)
+    ) {
+      return {
+        gain: peerData.lastGain,
+        spatialGain: peerData.spatialGain,
+        pan: peerData.lastPan,
+        distance: peerData.lastDistance,
+        obstacleAttenuation: peerData.lastObstacleAttenuation,
+        volume: peerData.volume ?? 1.0,
+      };
+    }
+
     const ctx = this.getAudioContext();
     const distance = computeDistance(localPos.x, localPos.y, peerPos.x, peerPos.y);
     const distanceGain = computeSpatialGain(distance, radius, this.gainCurve);
@@ -218,16 +271,20 @@ export class SpatialAudioGraph {
 
     const now = ctx.currentTime;
 
-    // Use setTargetAtTime for smooth exponential transition without clicks
+    // Use setTargetAtTime for smooth exponential transition without clicks.
     try {
-      peerData.gainNode.gain.setTargetAtTime(effectiveGain, now, this.smoothingTimeConstant);
-      if (peerData.pannerNode) {
+      if (effectiveGain !== peerData.lastGain) {
+        peerData.gainNode.gain.setTargetAtTime(effectiveGain, now, this.smoothingTimeConstant);
+      }
+      if (peerData.pannerNode && targetPan !== peerData.lastPan) {
         peerData.pannerNode.pan.setTargetAtTime(targetPan, now, this.smoothingTimeConstant);
       }
     } catch {
       // Fallback for mock environments
-      peerData.gainNode.gain.value = effectiveGain;
-      if (peerData.pannerNode) {
+      if (effectiveGain !== peerData.lastGain) {
+        peerData.gainNode.gain.value = effectiveGain;
+      }
+      if (peerData.pannerNode && targetPan !== peerData.lastPan) {
         peerData.pannerNode.pan.value = targetPan;
       }
     }
@@ -237,6 +294,12 @@ export class SpatialAudioGraph {
     peerData.lastPan = targetPan;
     peerData.lastDistance = distance;
     peerData.lastObstacleAttenuation = obstacleFactor;
+    peerData.lastPeerX = peerPos.x;
+    peerData.lastPeerY = peerPos.y;
+    peerData.lastLocalX = localPos.x;
+    peerData.lastLocalY = localPos.y;
+    peerData.lastRadius = radius;
+    peerData.obstacleSnapshot = snapshotObstacles(obstacles);
 
     return { gain: effectiveGain, spatialGain, pan: targetPan, distance, obstacleAttenuation: obstacleFactor, volume: peerVol };
   }
@@ -247,8 +310,11 @@ export class SpatialAudioGraph {
    * @param {boolean} muted
    */
   setMuted(muted) {
-    this.isMuted = Boolean(muted);
+    const nextMuted = Boolean(muted);
+    const mutedChanged = nextMuted !== this.isMuted;
+    this.isMuted = nextMuted;
     if (!this.audioContext || !this.masterGainNode) return;
+    if (!mutedChanged) return;
 
     const ctx = this.getAudioContext();
     const targetGain = this.isMuted ? 0.0 : this.masterVolume;
@@ -256,9 +322,13 @@ export class SpatialAudioGraph {
 
     if (this.masterGainNode) {
       try {
-        this.masterGainNode.gain.setTargetAtTime(targetGain, now, this.smoothingTimeConstant);
+        if (targetGain !== this.lastMasterGain) {
+          this.masterGainNode.gain.setTargetAtTime(targetGain, now, this.smoothingTimeConstant);
+          this.lastMasterGain = targetGain;
+        }
       } catch {
         this.masterGainNode.gain.value = targetGain;
+        this.lastMasterGain = targetGain;
       }
     }
   }
@@ -275,11 +345,14 @@ export class SpatialAudioGraph {
     this.masterVolume = Math.max(0.0, Math.min(1.0, volume));
     if (!this.isMuted && this.masterGainNode) {
       const ctx = this.getAudioContext();
-      const now = ctx.currentTime;
-      try {
-        this.masterGainNode.gain.setTargetAtTime(this.masterVolume, now, this.smoothingTimeConstant);
-      } catch {
-        this.masterGainNode.gain.value = this.masterVolume;
+      if (this.masterVolume !== this.lastMasterGain) {
+        const now = ctx.currentTime;
+        try {
+          this.masterGainNode.gain.setTargetAtTime(this.masterVolume, now, this.smoothingTimeConstant);
+        } catch {
+          this.masterGainNode.gain.value = this.masterVolume;
+        }
+        this.lastMasterGain = this.masterVolume;
       }
     }
     return this.masterVolume;
@@ -316,15 +389,20 @@ export class SpatialAudioGraph {
       return peerData.volume;
     }
 
-    peerData.volume = Math.max(0.0, Math.min(2.0, volume));
+    const nextVolume = Math.max(0.0, Math.min(2.0, volume));
+    if (nextVolume === peerData.volume) return peerData.volume;
+
+    peerData.volume = nextVolume;
     const ctx = this.getAudioContext();
     const spatialGain = peerData.spatialGain ?? 1.0;
     const effectiveGain = Math.max(0.0, Math.min(1.0, spatialGain * peerData.volume));
 
-    try {
-      peerData.gainNode.gain.setTargetAtTime(effectiveGain, ctx.currentTime, this.smoothingTimeConstant);
-    } catch {
-      peerData.gainNode.gain.value = effectiveGain;
+    if (effectiveGain !== peerData.lastGain) {
+      try {
+        peerData.gainNode.gain.setTargetAtTime(effectiveGain, ctx.currentTime, this.smoothingTimeConstant);
+      } catch {
+        peerData.gainNode.gain.value = effectiveGain;
+      }
     }
     peerData.lastGain = effectiveGain;
     return peerData.volume;

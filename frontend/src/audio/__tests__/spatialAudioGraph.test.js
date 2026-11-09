@@ -7,6 +7,7 @@ class MockAudioParam {
     this.value = defaultValue;
     this.target = defaultValue;
     this.timeConstant = 0;
+    this.targetUpdateCount = 0;
   }
 
   setValueAtTime(val) {
@@ -15,6 +16,7 @@ class MockAudioParam {
   }
 
   setTargetAtTime(target, time, timeConstant) {
+    this.targetUpdateCount += 1;
     this.target = target;
     this.timeConstant = timeConstant;
     this.value = target;
@@ -263,6 +265,55 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
     assert.equal(stream.getAudioTracks()[0].readyState, 'live');
 
     graph.destroy();
+  });
+
+  test('unchanged spatial inputs skip distance work and unchanged AudioParam targets', () => {
+    const graph = new SpatialAudioGraph();
+    const stream = createMockStream();
+    const obstacles = [{ x: 1000, y: 1000, w: 20, h: 20, type: 'wall' }];
+    graph.addPeerStream('peer-cached', stream, { x: 50, y: 0 }, { x: 0, y: 0 }, 100, obstacles);
+
+    const peerData = graph.peerNodes.get('peer-cached');
+    let distanceCalculations = 0;
+    const originalHypot = Math.hypot;
+    Math.hypot = (...values) => {
+      distanceCalculations += 1;
+      return originalHypot(...values);
+    };
+
+    try {
+      const unchanged = graph.updatePeerSpatial(
+        'peer-cached',
+        { x: 50, y: 0 },
+        { x: 0, y: 0 },
+        100,
+        obstacles
+      );
+
+      assert.equal(distanceCalculations, 0);
+      assert.equal(unchanged.distance, 50);
+      assert.equal(peerData.gainNode.gain.targetUpdateCount, 0);
+      assert.equal(peerData.pannerNode.pan.targetUpdateCount, 0);
+
+      obstacles[0].x = 20;
+      obstacles[0].y = -5;
+      const obstacleUpdated = graph.updatePeerSpatial(
+        'peer-cached',
+        { x: 50, y: 0 },
+        { x: 0, y: 0 },
+        100,
+        obstacles
+      );
+
+      assert.equal(distanceCalculations, 1);
+      assert.equal(obstacleUpdated.obstacleAttenuation, 0.1);
+      assert.equal(obstacleUpdated.gain, 0.05);
+      assert.equal(peerData.gainNode.gain.targetUpdateCount, 1);
+      assert.equal(peerData.pannerNode.pan.targetUpdateCount, 0);
+    } finally {
+      Math.hypot = originalHypot;
+      graph.destroy();
+    }
   });
 
   test('replacing a peer stream disconnects the old graph without stopping either stream', () => {
