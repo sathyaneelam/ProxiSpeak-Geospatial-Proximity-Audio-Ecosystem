@@ -4,7 +4,7 @@ import './MiniOfficeWelcome.css'
 import { createAuthApi } from './authApi.js'
 
 // Use Vite's same-origin /api proxy; avoid cross-origin cookie/CORS surprises.
-const signupApi = createAuthApi({ baseUrl: '' })
+const signupApi = createAuthApi()
 
 const PALETTE = {
   ink: '#27334a',
@@ -277,11 +277,11 @@ function OfficePerson({ run, onProgress, onComplete, onMoodChange }) {
 
     if (phone.current) phone.current.visible = false
     if (motion.current.start === null) motion.current.start = t
-    const elapsed = t - motion.current.start
+    const elapsed = (t - motion.current.start) * 3.15
     let phase = 'jump'
-    let x = -1.57
+    let x
     let y = 0
-    let yaw = 2.55
+    let yaw
     let leftSwing = 0
     let rightSwing = 0
     let armReach = 0
@@ -524,8 +524,6 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
     setNotice('')
     try {
       if (mode === 'login') {
-        // Current backend verifies the password but does NOT issue a session.
-        // Do not enter a protected office or store credentials in localStorage.
         const result = await signupApi.login({
           email: values.email.trim(),
           password: values.password,
@@ -533,8 +531,15 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
         if (result?.status !== 'success' || !result?.data?.id) {
           throw new Error('Unexpected login response from the backend.')
         }
+
+        const session = await signupApi.me()
+        if (session?.status !== 'success' || session?.data?.id !== result.data.id) {
+          throw new Error('Login succeeded, but your secure session could not be verified. Please try again.')
+        }
+
         setValues((previous) => ({ ...previous, password: '', confirm: '' }))
-        setNotice('Credentials verified! Secure sessions and office access are still being integrated.')
+        setNotice('Login successful. Welcome to your office!')
+        setRun(1)
       } else {
         await signupApi.signup({
           displayName: values.name.trim(),
@@ -609,11 +614,11 @@ export default function MiniOfficeWelcome({ onEnter = () => window.location.assi
               {error && <div className="mow-error" role="alert">{error}</div>}
               {notice && <div className="mow-success" role="status">{notice}</div>}
               <button type="submit" className="mow-submit" disabled={busy}>
-                <span>{busy ? (mode === 'signup' ? 'Creating your account...' : 'Verifying credentials...') : mode === 'signup' ? 'Create account' : 'Verify credentials'}</span>
+                <span>{busy ? (mode === 'signup' ? 'Creating your account...' : 'Signing in...') : mode === 'signup' ? 'Create account' : 'Sign in'}</span>
                 {!busy && <span aria-hidden="true">↗</span>}
               </button>
             </form>
-            <p className="mow-preview-note"><span className="mow-status-dot" /> Account creation and password verification use the backend API. Secure sessions and protected access are not enabled yet.</p>
+            <p className="mow-preview-note"><span className="mow-status-dot" /> Your account is protected by a secure backend session. Sign in to enter your team office.</p>
           </div>
           <div className="mow-bottom-caption">Made for teams that feel closer, even from afar.</div>
         </section>

@@ -20,7 +20,7 @@ const HEIGHT = 1200
 const SPEED = 260
 
 // Use Vite's same-origin API proxy for cookie-based sign-out.
-const signOutApi = createAuthApi({ baseUrl: '' })
+const signOutApi = createAuthApi()
 
 const RADIUS = 100
 
