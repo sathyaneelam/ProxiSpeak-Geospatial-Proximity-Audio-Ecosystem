@@ -47,6 +47,7 @@ export function useProximityAudio({
   const localPositionRef = useRef(localPosition);
   const earshotRadiusRef = useRef(earshotRadius);
   const obstaclesRef = useRef(obstacles);
+  const peerSpatialMetricsRef = useRef(new Map());
 
   const stopToneSimulation = useCallback(() => {
     toneSimulationRequestRef.current += 1;
@@ -347,13 +348,36 @@ export function useProximityAudio({
     signalingRef.current?.updatePosition(localPosition);
 
     const nextMetrics = {};
+    const activePeerIds = new Set();
 
     peers.forEach((peer) => {
       const peerId = peer.id || peer.name;
-      const distance = computeDistance(localPosition.x, localPosition.y, peer.x, peer.y);
-      const isNearby = distance <= earshotRadius;
-      const gain = computeSpatialGain(distance, earshotRadius);
-      const pan = computeStereoPan(localPosition.x, peer.x, earshotRadius);
+      activePeerIds.add(peerId);
+      const cachedMetrics = peerSpatialMetricsRef.current.get(peerId);
+      let spatialMetrics = cachedMetrics;
+
+      if (
+        !cachedMetrics ||
+        cachedMetrics.localX !== localPosition.x ||
+        cachedMetrics.localY !== localPosition.y ||
+        cachedMetrics.peerX !== peer.x ||
+        cachedMetrics.peerY !== peer.y ||
+        cachedMetrics.radius !== earshotRadius
+      ) {
+        const distance = computeDistance(localPosition.x, localPosition.y, peer.x, peer.y);
+        spatialMetrics = {
+          localX: localPosition.x,
+          localY: localPosition.y,
+          peerX: peer.x,
+          peerY: peer.y,
+          radius: earshotRadius,
+          distance,
+          isNearby: distance <= earshotRadius,
+          gain: computeSpatialGain(distance, earshotRadius),
+          pan: computeStereoPan(localPosition.x, peer.x, earshotRadius),
+        };
+        peerSpatialMetricsRef.current.set(peerId, spatialMetrics);
+      }
 
       peerManagerRef.current?.updatePeerPosition(peerId, {
         x: peer.x,
@@ -378,7 +402,7 @@ export function useProximityAudio({
       // Proximity Connection Policy:
       // When peer enters earshot and audio is active: initiate WebRTC negotiation
       if (isAudioActive && peerManagerRef.current) {
-        if (isNearby) {
+        if (spatialMetrics.isNearby) {
           const session = peerManagerRef.current.getOrCreatePeer(peerId);
           if (session?.pc.connectionState === 'new' && session.pc.signalingState === 'stable') {
             void peerManagerRef.current.initiateConnection(peerId);
@@ -386,20 +410,26 @@ export function useProximityAudio({
         } else {
           // Out of earshot: gain is 0.0. Suspend or close connection according to policy
           // If disconnected/closed, release peer
-          if (peerManagerRef.current.peers.has(peerId) && distance > earshotRadius * 1.5) {
+          if (peerManagerRef.current.peers.has(peerId) && spatialMetrics.distance > earshotRadius * 1.5) {
             peerManagerRef.current.closePeer(peerId);
           }
         }
       }
 
       nextMetrics[peerId] = {
-        distance: Math.round(distance),
-        isNearby,
-        gain: Math.round(gain * 100), // Percent (0% to 100%)
-        pan: pan, // -1.0 to +1.0
+        distance: Math.round(spatialMetrics.distance),
+        isNearby: spatialMetrics.isNearby,
+        gain: Math.round(spatialMetrics.gain * 100), // Percent (0% to 100%)
+        pan: spatialMetrics.pan, // -1.0 to +1.0
         connectionState: peerManagerRef.current?.peers.get(peerId)?.pc?.connectionState || 'idle',
       };
     });
+
+    for (const peerId of peerSpatialMetricsRef.current.keys()) {
+      if (!activePeerIds.has(peerId)) {
+        peerSpatialMetricsRef.current.delete(peerId);
+      }
+    }
 
     if (
       isToneSimulationActive &&

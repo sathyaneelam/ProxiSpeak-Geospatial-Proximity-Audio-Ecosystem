@@ -16,7 +16,6 @@ import {
 const snapshotObstacles = (obstacles) =>
   Array.isArray(obstacles)
     ? obstacles.map((obstacle) => ({
-      obstacle,
       x: obstacle?.x,
       y: obstacle?.y,
       w: obstacle?.w,
@@ -32,7 +31,6 @@ const obstaclesMatchSnapshot = (obstacles, snapshot) =>
   obstacles.every((obstacle, index) => {
     const previous = snapshot[index];
     return (
-      obstacle === previous.obstacle &&
       obstacle?.x === previous.x &&
       obstacle?.y === previous.y &&
       obstacle?.w === previous.w &&

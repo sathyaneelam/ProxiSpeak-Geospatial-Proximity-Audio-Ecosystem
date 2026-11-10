@@ -295,6 +295,20 @@ describe('SpatialAudioGraph - Web Audio Graph, Master Volume, and Spatial Attenu
       assert.equal(peerData.gainNode.gain.targetUpdateCount, 0);
       assert.equal(peerData.pannerNode.pan.targetUpdateCount, 0);
 
+      const equivalentObstacles = obstacles.map((obstacle) => ({ ...obstacle }));
+      const equivalent = graph.updatePeerSpatial(
+        'peer-cached',
+        { x: 50, y: 0 },
+        { x: 0, y: 0 },
+        100,
+        equivalentObstacles
+      );
+
+      assert.equal(distanceCalculations, 0);
+      assert.equal(equivalent.distance, 50);
+      assert.equal(peerData.gainNode.gain.targetUpdateCount, 0);
+      assert.equal(peerData.pannerNode.pan.targetUpdateCount, 0);
+
       obstacles[0].x = 20;
       obstacles[0].y = -5;
       const obstacleUpdated = graph.updatePeerSpatial(
