@@ -1,26 +1,28 @@
 
-function errorHandler(err, req, res, next) {
-  console.error(err?.stack || err?.message || "Unknown error");
-
+function errorHandler(error, req, res, next) {
+  // Pass the error to Express if headers are already sent.
   if (res.headersSent) {
-    return next(err);
+    return next(error);
   }
 
+  // Accept only valid HTTP error status codes (400–599).
   const statusCode =
-    Number.isInteger(err?.status) &&
-    err.status >= 400 &&
-    err.status < 600
-      ? err.status
+    Number.isInteger(error.status) &&
+    error.status >= 400 &&
+    error.status <= 599
+      ? error.status
       : 500;
 
-  const message =
-    statusCode === 500
-      ? "Internal server error"
-      : err?.message || "Request failed";
+  if (statusCode === 500) {
+    console.error(error);
+  }
 
   return res.status(statusCode).json({
     status: "error",
-    message,
+    message:
+      statusCode === 500
+        ? "Internal server error"
+        : error.message,
   });
 }
 

@@ -185,7 +185,9 @@ async function logout(req, res, next) {
       res.clearCookie("proxispeak.sid", {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
+        sameSite:
+          process.env.NODE_ENV === "production" ? "none" : "lax",
+        path: "/",
       });
 
       return res.status(200).json({

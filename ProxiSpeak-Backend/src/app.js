@@ -1,3 +1,4 @@
+
 const helmet = require("helmet");
 const express = require("express");
 const cors = require("cors");
@@ -16,12 +17,24 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(helmet());
 
-const frontendOrigin =
-  process.env.FRONTEND_ORIGIN || "http://localhost:5173";
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://proxispeak-frontend.onrender.com",
+  ...(process.env.FRONTEND_ORIGIN || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
 
 app.use(
   cors({
-    origin: frontendOrigin,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Origin not allowed by CORS"));
+    },
     credentials: true,
   })
 );
@@ -49,7 +62,8 @@ app.use(
     cookie: {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite:
+        process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 24 * 60 * 60 * 1000,
     },
   })

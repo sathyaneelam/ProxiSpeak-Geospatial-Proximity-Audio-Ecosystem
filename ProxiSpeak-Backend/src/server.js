@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 const http = require("http");
 const { Server } = require("socket.io");
@@ -7,12 +8,19 @@ const { initSockets } = require("./sockets");
 const validateEnv = require("./config/validateEnv");
 
 const server = http.createServer(app);
-const frontendOrigin =
-  process.env.FRONTEND_ORIGIN || "http://localhost:5173";
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://proxispeak-frontend.onrender.com",
+  ...(process.env.FRONTEND_ORIGIN || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
 
 const io = new Server(server, {
   cors: {
-    origin: frontendOrigin,
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
