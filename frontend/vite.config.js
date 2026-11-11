@@ -19,6 +19,7 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         meetings: fileURLToPath(new URL('./meetings.html', import.meta.url)),
+        office: fileURLToPath(new URL('./office.html', import.meta.url)),
       },
     },
   },

@@ -97,7 +97,7 @@ export default function MeetingLobby() {
     } catch {
       localStorage.setItem('proxispeak-avatar-profile', JSON.stringify({ name, color: DEFAULT_COLOR }))
     }
-    window.location.assign(`/?room=${encodeURIComponent(code)}`)
+    window.location.assign(`/office.html?room=${encodeURIComponent(code)}`)
   }
 
   return (
