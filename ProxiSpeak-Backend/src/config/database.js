@@ -1,20 +1,69 @@
 const mongoose = require("mongoose");
 
-async function connectDB() {
-  try {
-    if (!process.env.MONGODB_URI) {
-      throw new Error("MONGODB_URI is missing. Check your .env file.");
+/**
+ * Connect to MongoDB using environment variables or a provided URI.
+ *
+ * @param {string} [uri] - Optional MongoDB URI (defaults to process.env.MONGODB_URI)
+ * @param {object} [options] - Optional Mongoose connection options
+ * @returns {Promise<mongoose.Connection>}
+ */
+async function connectDB(uri = process.env.MONGODB_URI, options = {}) {
+  const mongoURI = uri || process.env.MONGODB_URI;
+
+  if (!mongoURI) {
+    const errorMsg = "MongoDB connection failed: MONGODB_URI environment variable is not defined";
+    console.error(errorMsg);
+    if (process.env.NODE_ENV !== "test" && options.exitOnError !== false) {
+      process.exit(1);
     }
+    throw new Error(errorMsg);
+  }
 
-    await mongoose.connect(process.env.MONGODB_URI);
+  const { exitOnError = true, ...mongooseOptions } = options;
 
+  const defaultOptions = {
+    autoIndex: true,
+    serverSelectionTimeoutMS: 5000,
+    ...mongooseOptions,
+  };
+
+  try {
+    await mongoose.connect(mongoURI, defaultOptions);
     console.log("MongoDB connected successfully");
-
     return mongoose.connection;
   } catch (error) {
     console.error("MongoDB connection failed:", error.message);
+    if (process.env.NODE_ENV !== "test" && exitOnError !== false) {
+      process.exit(1);
+    }
     throw error;
   }
 }
 
+async function disconnectDB() {
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.disconnect();
+    console.log("MongoDB disconnected successfully");
+  }
+}
+
+function getConnectionStatus() {
+  const states = {
+    0: "disconnected",
+    1: "connected",
+    2: "connecting",
+    3: "disconnecting",
+  };
+
+  return {
+    state: states[mongoose.connection.readyState] || "unknown",
+    readyState: mongoose.connection.readyState,
+    host: mongoose.connection.host,
+    name: mongoose.connection.name,
+  };
+}
+
 module.exports = connectDB;
+module.exports.connectDB = connectDB;
+module.exports.disconnectDB = disconnectDB;
+module.exports.getConnectionStatus = getConnectionStatus;

@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 const http = require("http");
 const { Server } = require("socket.io");
@@ -26,7 +25,6 @@ const io = new Server(server, {
   },
 });
 
-// Initialize modular socket event handlers and lifecycle management
 initSockets(io);
 
 const PORT = process.env.PORT || 3000;
@@ -34,6 +32,14 @@ const PORT = process.env.PORT || 3000;
 async function startServer(port = PORT) {
   validateEnv();
   await connectDB();
+
+  try {
+    const { seedDefaultOffice } = require("./services/officeService");
+    await seedDefaultOffice();
+    console.log("Default office 'office-01' seeded with furniture obstacles.");
+  } catch (error) {
+    console.warn("Default office seeding warning:", error.message);
+  }
 
   return new Promise((resolve) => {
     server.listen(port, () => {
