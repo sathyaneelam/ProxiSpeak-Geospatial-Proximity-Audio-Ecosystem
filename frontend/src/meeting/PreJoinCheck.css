@@ -1,0 +1,21 @@
+/* ProxiSpeak pre-join checks: intentionally scoped to avoid changing the existing office. */
+.pj-wrap { border: 1px solid #e7ece5; background: #fafbf8; border-radius: 15px; padding: 17px 18px 15px; margin: 19px 0 5px; color: #3c5142; }
+.pj-heading-row { display: flex; align-items: start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.pj-heading-row h3 { font-family: Manrope, sans-serif; font-size: 14px; letter-spacing: -.03em; margin: 0 0 4px; color: #33483a; }
+.pj-heading-row p { font-size: 11px; margin: 0; line-height: 1.5; color: #819083; }
+.pj-label { font-size: 9px; font-weight: 800; letter-spacing: .1em; color: #94a397; padding-top: 3px; }
+.pj-check-row { border-top: 1px solid #e9ede7; padding: 12px 0 11px; display: grid; grid-template-columns: 1fr auto; column-gap: 8px; align-items: center; }
+.pj-check-title { display: flex; gap: 8px; align-items: center; }
+.pj-check-title strong { font-size: 12px; font-weight: 800; }
+.pj-check-row p { grid-column: 1 / -1; font-size: 11px; line-height: 1.6; color: #7a897c; margin: 5px 0 8px; }
+.pj-check-row button { grid-column: 1 / -1; justify-self: start; border-radius: 8px; padding: 6px 10px; background: #eaf0e9; border: 1px solid #dfe8dd; color: #496854; font-size: 11px; font-weight: 700; transition: background .16s; }
+.pj-check-row button:hover { background: #dfe9df; }
+.pj-check-row button:disabled { opacity: .6; cursor: not-allowed; }
+.pj-check-row button:focus-visible { outline: 2px solid #7b9f85; outline-offset: 2px; }
+.pj-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; background: #abb7ad; }
+.pj-dot-ready { background: #73a486; box-shadow: 0 0 0 3px #e4f0e7; }
+.pj-dot-error { background: #c78978; box-shadow: 0 0 0 3px #f8eae6; }
+.pj-dot-checking { background: #d0a66c; animation: pj-pulse 1.5s infinite; }
+.pj-footnote { margin: 0; padding-top: 9px; border-top: 1px solid #e9ede7; color: #93a095; font-size: 10px; line-height: 1.7; }
+@keyframes pj-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .pj-dot-checking { animation: none; } .pj-check-row button { transition: none; } }
