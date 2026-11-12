@@ -2,7 +2,6 @@ const mongoose = require("mongoose");
 
 /**
  * Connect to MongoDB using environment variables or a provided URI.
- * Configured for flat 2D geospatial indexing and resilient connection handling.
  *
  * @param {string} [uri] - Optional MongoDB URI (defaults to process.env.MONGODB_URI)
  * @param {object} [options] - Optional Mongoose connection options
@@ -23,9 +22,9 @@ async function connectDB(uri = process.env.MONGODB_URI, options = {}) {
   const { exitOnError = true, ...mongooseOptions } = options;
 
   const defaultOptions = {
-    autoIndex: true, // Auto-build 2D planar indexes in development/test
+    autoIndex: true,
     serverSelectionTimeoutMS: 5000,
-    ...mongooseOptions
+    ...mongooseOptions,
   };
 
   try {
@@ -41,9 +40,6 @@ async function connectDB(uri = process.env.MONGODB_URI, options = {}) {
   }
 }
 
-/**
- * Disconnect from MongoDB (useful for test teardown and graceful shutdown).
- */
 async function disconnectDB() {
   if (mongoose.connection.readyState !== 0) {
     await mongoose.disconnect();
@@ -51,26 +47,23 @@ async function disconnectDB() {
   }
 }
 
-/**
- * Get current MongoDB connection status.
- * 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
- */
 function getConnectionStatus() {
   const states = {
     0: "disconnected",
     1: "connected",
     2: "connecting",
-    3: "disconnecting"
+    3: "disconnecting",
   };
+
   return {
     state: states[mongoose.connection.readyState] || "unknown",
     readyState: mongoose.connection.readyState,
     host: mongoose.connection.host,
-    name: mongoose.connection.name
+    name: mongoose.connection.name,
   };
 }
 
 module.exports = connectDB;
 module.exports.connectDB = connectDB;
 module.exports.disconnectDB = disconnectDB;
-module.exports.getConnectionStatus = getConnectionStatus;
+module.exports.getConnectionStatus = getConnectionStatus;
